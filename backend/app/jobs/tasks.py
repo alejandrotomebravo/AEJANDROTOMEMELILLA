@@ -542,6 +542,8 @@ def render_job(ctx: JobContext) -> dict[str, Any]:
                                                               ("source_type", "rights_holder", "license_url")},
                                      "finalidad": project["use_declaration"]["purpose"]})
     result["manifest_asset_id"] = _new_asset(ctx, side, "manifest", ".json")["id"]
+    meta = a["meta"] | {"srt_asset_id": result.get("srt_asset_id"), "manifest_asset_id": result["manifest_asset_id"]}
+    db.execute("UPDATE assets SET meta=? WHERE id=?", (db.jdump(meta), a["id"]))
     db.audit("exportacion", ctx.user_id, project["id"], render=a["id"], sha256=a["sha256"],
              resolution=opts.resolution, codec=opts.codec, identities=identities, ack=p.get("ack"))
     _cleanup(ctx)
