@@ -132,6 +132,20 @@ class Settings:
 
     ffmpeg: str = "ffmpeg"
     ffprobe: str = "ffprobe"
+    # Aislamiento de procesos multimedia (límites por subproceso)
+    media_cpu_seconds: int = 3600
+    media_max_file_mb: int = 8192
+
+    # Importación desde Internet
+    http_user_agent: str = "EstudioIA/0.2 (+https://example.invalid/contacto)"
+    outbound_proxy: str = ""
+    allow_private_networks: bool = False  # SOLO pruebas: permite descargar de IPs privadas
+    download_timeout_seconds: int = 60
+    max_redirects: int = 5
+    youtube_api_key: str = ""
+    vimeo_access_token: str = ""
+    pexels_api_key: str = ""
+    enabled_connectors: str = "wikimedia,internet_archive,pexels,vimeo,youtube,direct_url"
 
     @property
     def storage_dir(self) -> Path:
@@ -227,7 +241,20 @@ def load_settings() -> Settings:
         render_preset=_str("RENDER_PRESET", "medium"),
         ffmpeg=_str("FFMPEG_BINARY", "ffmpeg"),
         ffprobe=_str("FFPROBE_BINARY", "ffprobe"),
+        media_cpu_seconds=_int("MEDIA_CPU_SECONDS", 3600),
+        media_max_file_mb=_int("MEDIA_MAX_FILE_MB", 8192),
+        http_user_agent=_str("HTTP_USER_AGENT", "EstudioIA/0.2 (+https://example.invalid/contacto)"),
+        outbound_proxy=_str("OUTBOUND_PROXY"),
+        allow_private_networks=_bool("ALLOW_PRIVATE_NETWORKS", False),
+        download_timeout_seconds=_int("DOWNLOAD_TIMEOUT_SECONDS", 60),
+        max_redirects=_int("MAX_REDIRECTS", 5),
+        youtube_api_key=_str("YOUTUBE_API_KEY"),
+        vimeo_access_token=_str("VIMEO_ACCESS_TOKEN"),
+        pexels_api_key=_str("PEXELS_API_KEY"),
+        enabled_connectors=_str("ENABLED_CONNECTORS", "wikimedia,internet_archive,pexels,vimeo,youtube,direct_url"),
     )
+    if s.env == "production" and s.allow_private_networks:
+        raise RuntimeError("ALLOW_PRIVATE_NETWORKS no puede activarse en producción (riesgo de SSRF).")
     return s
 
 

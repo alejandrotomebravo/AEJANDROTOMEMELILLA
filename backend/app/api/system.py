@@ -8,6 +8,7 @@ from .. import db, policy, services
 from ..ai import asr, face_swap, lipsync, tts
 from ..config import settings
 from ..media import ffmpeg, provenance, render, watermark
+from ..sources import registry
 from .deps import current_user
 
 router = APIRouter(prefix="/api/system", tags=["sistema"])
@@ -36,6 +37,7 @@ def capabilities(user=Depends(current_user)) -> dict[str, Any]:
         "export": {"h264": ffmpeg.has_encoder("libx264"), "h265": ffmpeg.has_encoder("libx265"),
                    "resolutions": [r for r in render.RESOLUTIONS if r != "360p" and (r != "2160p" or settings.allow_4k)],
                    "fps": sorted(render.FPS_OPTIONS)},
+        "connectors": [c.info() for c in registry.enabled()],
         "limits": {"max_upload_mb": settings.max_upload_mb, "max_video_seconds": settings.max_video_seconds,
                    "max_dialogue_seconds": settings.max_dialogue_seconds, "allow_4k": settings.allow_4k,
                    "allow_minors": settings.allow_minors},

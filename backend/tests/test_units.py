@@ -35,7 +35,7 @@ def test_watermark_rejects_unknown_labels_and_long_custom(env):
 # ------------------------------------------------------------ política de uso
 
 def _prov(**kw):
-    base = {"source_type": "propio", "attested": True}
+    base = {"source_type": "propio", "attested": True, "can_modify": True}
     base.update(kw)
     return base
 
@@ -98,28 +98,58 @@ def test_identity_scope_enforced(env):
 
 # ------------------------------------------------------------ línea de tiempo
 
-def test_source_to_output_mapping():
-    tl = timeline.empty(10)
-    tl["video"]["clips"] = [{"id": "a", "in": 5, "out": 8}, {"id": "b", "in": 0, "out": 2}]
-    assert timeline.output_duration(tl) == 5
-    assert timeline.source_to_output(tl, 6, 7) == [(1.0, 2.0)]
-    assert timeline.source_to_output(tl, 1, 6) == [(0.0, 1.0), (4.0, 5.0)]
-    assert timeline.source_point_to_output(tl, 9) is None
+def _tl(clips):
+    tl = timeline.empty()
+    tl["video"]["clips"] = [timeline.new_clip(s, a, b) | extra for s, a, b, extra in clips]
+    return tl
 
 
-def test_timeline_validation_rejects_unknown_assets():
-    tl = timeline.empty(10)
-    tl["dialogue"]["items"] = [{"asset_id": "desconocido", "source_start": 1}]
+def test_source_to_output_mapping_with_several_sources_and_speed():
+    tl = _tl([("A", 5, 8, {}), ("B", 0, 2, {"speed": 2.0}), ("A", 0, 2, {})])
+    assert timeline.output_duration(tl) == 3 + 1 + 2
+    assert timeline.source_to_output(tl, "A", 6, 7) == [(1.0, 2.0)]
+    assert timeline.source_to_output(tl, "B", 0, 2) == [(3.0, 4.0)]
+    assert timeline.source_to_output(tl, "A", 1, 6) == [(0.0, 1.0), (5.0, 6.0)]
+    assert timeline.used_sources(tl) == ["A", "B"]
+
+
+def test_timeline_validation_rejects_unknown_sources_and_assets():
+    tl = _tl([("X", 0, 1, {})])
     with pytest.raises(Exception):
-        timeline.validate(tl, 10, set())
+        timeline.validate(tl, {"A": 10}, set())
+    tl = _tl([("A", 0, 1, {})])
+    tl["dialogue"]["items"] = [{"asset_id": "desconocido", "source_id": "A", "source_start": 1}]
+    with pytest.raises(Exception):
+        timeline.validate(tl, {"A": 10}, set())
+
+
+def test_timeline_validation_limits_speed_color_and_fades():
+    with pytest.raises(Exception):
+        timeline.validate(_tl([("A", 0, 2, {"speed": 4})]), {"A": 10}, set())
+    with pytest.raises(Exception):
+        timeline.validate(_tl([("A", 0, 1, {"fade_in": 1, "fade_out": 1})]), {"A": 10}, set())
+    ok = timeline.validate(_tl([("A", 0, 2, {"color": {"brightness": 0.1, "contrast": 1.2, "saturation": 0}})]),
+                           {"A": 10}, set())
+    assert ok["video"]["clips"][0]["color"]["saturation"] == 0
 
 
 def test_subtitles_follow_reordered_clips():
-    tl = timeline.empty(10)
-    tl["video"]["clips"] = [{"id": "a", "in": 5, "out": 8}, {"id": "b", "in": 0, "out": 2}]
-    tl["subtitles"]["items"] = [{"id": "s", "start": 6, "end": 7, "text": "Hola", "base": "source"}]
-    tl = timeline.validate(tl, 10, set())
+    tl = _tl([("A", 5, 8, {}), ("A", 0, 2, {})])
+    tl["subtitles"]["items"] = [{"id": "s", "start": 6, "end": 7, "text": "Hola", "base": "source", "source_id": "A"}]
+    tl = timeline.validate(tl, {"A": 10}, set())
     assert timeline.output_subtitles(tl) == [{"start": 1.0, "end": 2.0, "text": "Hola"}]
+
+
+def test_remove_source_cleans_everything():
+    tl = _tl([("A", 0, 2, {}), ("B", 0, 2, {})])
+    tl["source_audio"]["mutes"] = [{"source_id": "B", "start": 0, "end": 1}]
+    tl = timeline.remove_source(tl, "B")
+    assert timeline.used_sources(tl) == ["A"] and not tl["source_audio"]["mutes"]
+
+
+def test_faces_label_is_forced(env):
+    cfg = watermark.with_required({"labels": ["PARODIA"]}, faces_altered=True)
+    assert watermark.FACES_LABEL in cfg["labels"] and "PARODIA" in cfg["labels"]
 
 
 # ------------------------------------------------------------ texto y subtítulos
@@ -180,3 +210,17 @@ def test_quality_ok_for_good_material():
 def test_quality_blocks_when_face_missing():
     rep = quality.assess_segment(_track(200, n=3), [], 0, 4, 0.5)
     assert not rep["ok"]
+
+
+def test_modify_permission_is_distinct_from_access(env):
+    with pytest.raises(PolicyError, match="MODIFICAR"):
+        policy.validate_provenance({"source_type": "propio", "attested": True})
+
+
+def test_internet_origin_with_nd_license_requires_explicit_authorization(env):
+    origin = {"connector": "wikimedia", "platform": "Wikimedia Commons",
+              "license": {"name": "CC BY-ND 4.0", "allows_modification": False, "notes": []}}
+    with pytest.raises(PolicyError):
+        policy.validate_provenance(_prov(source_type="licencia"), origin)
+    ok = policy.validate_provenance(_prov(source_type="autorizado", rights_holder="Autora"), origin)
+    assert ok["internet_download"] is True

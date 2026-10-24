@@ -34,18 +34,35 @@ CREATE TABLE IF NOT EXISTS projects (
     name TEXT NOT NULL,
     aspect TEXT NOT NULL,
     settings TEXT NOT NULL DEFAULT '{}',
-    provenance TEXT,
     use_declaration TEXT,
     timeline TEXT NOT NULL DEFAULT '{}',
     timeline_version INTEGER NOT NULL DEFAULT 0,
-    source_asset_id TEXT,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS sources (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL,
+    label TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    origin TEXT NOT NULL DEFAULT '{}',
+    provenance TEXT,
+    fragment TEXT,
+    original_asset_id TEXT,
     proxy_asset_id TEXT,
     working_asset_id TEXT,
     review_asset_id TEXT,
+    sprite_asset_id TEXT,
     video_history TEXT NOT NULL DEFAULT '[]',
     analysis TEXT,
-    created_at REAL NOT NULL,
-    updated_at REAL NOT NULL
+    duration REAL,
+    width INTEGER,
+    height INTEGER,
+    fps REAL,
+    error TEXT,
+    created_at REAL NOT NULL
 );
 CREATE TABLE IF NOT EXISTS assets (
     id TEXT PRIMARY KEY,
@@ -67,6 +84,7 @@ CREATE TABLE IF NOT EXISTS assets (
 CREATE TABLE IF NOT EXISTS characters (
     id TEXT PRIMARY KEY,
     project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    source_id TEXT NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
     label TEXT NOT NULL,
     track TEXT NOT NULL,
     stats TEXT NOT NULL DEFAULT '{}',
@@ -141,6 +159,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     finished_at REAL
 );
 CREATE INDEX IF NOT EXISTS jobs_status ON jobs(status, next_run_at);
+CREATE INDEX IF NOT EXISTS sources_project ON sources(project_id);
 CREATE TABLE IF NOT EXISTS audit (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id TEXT,
@@ -160,6 +179,8 @@ CREATE TABLE IF NOT EXISTS usage (
     created_at REAL NOT NULL
 );
 """
+
+SCHEMA_VERSION = 2
 
 _local = threading.local()
 _init_lock = threading.Lock()
@@ -195,7 +216,13 @@ def conn() -> sqlite3.Connection:
         _local.path = path
     with _init_lock:
         if _initialized_for != path:
+            version = c.execute("PRAGMA user_version").fetchone()[0]
+            has_tables = c.execute("SELECT count(*) FROM sqlite_master WHERE name='projects'").fetchone()[0]
+            if has_tables and version < SCHEMA_VERSION:
+                raise RuntimeError("La base de datos es de una versión anterior (0.1) sin migración automática. "
+                                   "Haga una copia y elimine DATA_DIR para crearla de nuevo.")
             c.executescript(SCHEMA)
+            c.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
             _initialized_for = path
     return c
 

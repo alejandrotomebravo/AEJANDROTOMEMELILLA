@@ -6,11 +6,12 @@ import shutil
 from pathlib import Path
 from typing import Any
 
-from .. import db, services, storage
+from .. import db, net, services, storage
 from ..ai import asr, face_detect, face_swap, lipsync, quality, tts
 from ..config import settings
 from ..errors import AppError, LimitExceeded, QualityError
-from ..media import ffmpeg, provenance, render, subtitles, timeline
+from ..media import ffmpeg, provenance, render, subtitles, timeline, watermark
+from ..sources import registry
 from ..policy import require_identity_usable
 from ..security import sign_asset
 from .queue import JobContext, enqueue, handler
@@ -42,15 +43,17 @@ def _new_asset(ctx: JobContext, src: Path, kind: str, ext: str, *, meta: dict | 
         width=info.width if info else None, height=info.height if info else None, meta=meta)
 
 
-def _review(ctx: JobContext, project: dict[str, Any]) -> str:
-    """Genera la copia de revisión (480p, con marca de agua) del vídeo procesado actual."""
+def _review(ctx: JobContext, project: dict[str, Any], source: dict[str, Any]) -> str:
+    """Copia de revisión (480p, con marca de agua) de la versión actual de una fuente."""
     wd = _workdir(ctx)
-    out = wd / "review.mp4"
-    render.burn_watermark(services.working_path(project), out, services.watermark_cfg(project), wd,
+    out = wd / f"review_{source['id']}.mp4"
+    render.burn_watermark(services.source_working_path(source), out, services.watermark_cfg(project), wd,
                           max_height=480, should_cancel=ctx.cancelled, on_progress=ctx.progress)
-    old = project.get("review_asset_id")
-    a = _new_asset(ctx, out, "review", ".mp4", meta={"working_asset_id": project["working_asset_id"]})
-    services.update_project(project["id"], review_asset_id=a["id"])
+    old = source.get("review_asset_id")
+    a = _new_asset(ctx, out, "review", ".mp4", meta={"source_id": source["id"],
+                                                     "working_asset_id": source["working_asset_id"]})
+    services.update_source(source["id"], review_asset_id=a["id"])
+    source["review_asset_id"] = a["id"]
     if old:
         storage.delete_asset(old)
     return a["id"]
@@ -60,51 +63,98 @@ def _review(ctx: JobContext, project: dict[str, Any]) -> str:
 
 @handler("import_video")
 def import_video(ctx: JobContext) -> dict[str, Any]:
+    """Importa una fuente: descarga (si viene de Internet), valida, normaliza el fragmento y analiza."""
     project = services.load_project(ctx.project_id, ctx.user_id)
-    src = storage.get_owned(ctx.params["asset_id"], ctx.user_id)
-    info = ffmpeg.probe(src["path"])
-    if not info.has_video:
-        raise AppError("El archivo no contiene vídeo.", code="sin_video")
-    if info.duration > settings.max_video_seconds:
-        raise LimitExceeded(f"El vídeo dura {info.duration:.0f} s y el máximo permitido es "
-                            f"{settings.max_video_seconds} s. Recórtelo antes de importarlo.")
+    src = services.load_source(ctx.params["source_id"], ctx.user_id, project["id"])
+    services.update_source(src["id"], status="importing", error=None)
     wd = _workdir(ctx)
-    out = wd / "proxy.mp4"
-    ctx.phase(0, 0.9, "Convirtiendo el vídeo a un formato de trabajo")
-    max_h = None if settings.allow_4k else 1080
-    norm = ffmpeg.normalize_video(Path(src["path"]), out, max_height=max_h, on_progress=ctx.progress,
-                                  should_cancel=ctx.cancelled)
-    proxy = _new_asset(ctx, out, "source_proxy", ".mp4",
-                       meta={"original_asset_id": src["id"], "fps": norm.fps,
-                             "original": {"codec": info.vcodec, "width": info.width, "height": info.height,
-                                          "fps": info.fps, "rotation": info.rotation}})
-    tl = timeline.empty(norm.duration)
-    services.update_project(project["id"], proxy_asset_id=proxy["id"], working_asset_id=proxy["id"],
-                            source_asset_id=src["id"], timeline=tl,
-                            timeline_version=project["timeline_version"] + 1, video_history=[], analysis=None,
-                            review_asset_id=None)
-    db.execute("DELETE FROM characters WHERE project_id=?", (project["id"],))
+    try:
+        original_id = src.get("original_asset_id")
+        if not original_id:
+            original_id = _download_remote(ctx, project, src, wd)
+        original = storage.get_owned(original_id, ctx.user_id)
+        info = ffmpeg.probe(original["path"], untrusted="video")
+        frag = src.get("fragment") or {}
+        span_start = float(frag.get("start") or 0)
+        span_end = float(frag.get("end") or info.duration)
+        if span_end - span_start > settings.max_video_seconds:
+            raise LimitExceeded(f"El vídeo (o el fragmento) dura {span_end - span_start:.0f} s y el máximo es "
+                                f"{settings.max_video_seconds} s. Seleccione un fragmento más corto.")
+        out = wd / "proxy.mp4"
+        ctx.phase(0.35, 0.9, "Convirtiendo el vídeo a un formato de trabajo")
+        norm = ffmpeg.normalize_video(Path(original["path"]), out, max_height=None if settings.allow_4k else 1080,
+                                      start=span_start, end=span_end, on_progress=ctx.progress,
+                                      should_cancel=ctx.cancelled)
+        proxy = _new_asset(ctx, out, "source_proxy", ".mp4",
+                           meta={"source_id": src["id"], "fps": norm.fps,
+                                 "original": {"codec": info.vcodec, "width": info.width, "height": info.height,
+                                              "fps": info.fps, "rotation": info.rotation, "duration": info.duration}})
+        services.update_source(src["id"], proxy_asset_id=proxy["id"], working_asset_id=proxy["id"],
+                               status="ready", duration=norm.duration, width=norm.width, height=norm.height,
+                               fps=norm.fps, video_history=[], analysis=None, review_asset_id=None)
+        db.execute("DELETE FROM characters WHERE source_id=?", (src["id"],))
+    except Exception as exc:
+        msg = exc.message if isinstance(exc, AppError) else "Error al importar."
+        services.update_source(src["id"], status="failed", error=msg[:300])
+        raise
+    if ctx.params.get("add_to_timeline", True):
+        p = services.load_project(project["id"], ctx.user_id)
+        tl = p["timeline"]
+        tl["video"]["clips"].append(timeline.new_clip(src["id"], 0.0, norm.duration))
+        services.update_project(p["id"], timeline=tl, timeline_version=p["timeline_version"] + 1)
     ctx.phase(0.9, 1.0, "Preparando el análisis")
-    analysis = enqueue("analyze", ctx.user_id, project["id"], {}, message="Analizando rostros y audio")
+    analysis = enqueue("analyze", ctx.user_id, project["id"], {"source_id": src["id"]},
+                       message="Analizando rostros, escenas y audio")
+    db.audit("fuente_importada", ctx.user_id, project["id"], source=src["id"], kind=src["kind"],
+             sha256=original["sha256"], url=(src["origin"] or {}).get("page_url"))
     _cleanup(ctx)
-    return {"proxy_asset_id": proxy["id"], "duration": norm.duration, "width": norm.width,
-            "height": norm.height, "fps": norm.fps, "analysis_job_id": analysis["id"]}
+    return {"source_id": src["id"], "duration": norm.duration, "width": norm.width, "height": norm.height,
+            "fps": norm.fps, "analysis_job_id": analysis["id"]}
+
+
+def _download_remote(ctx: JobContext, project: dict[str, Any], src: dict[str, Any], wd: Path) -> str:
+    origin = src["origin"] or {}
+    file_url = ctx.params.get("file_url")
+    if not file_url:
+        raise AppError("Falta el enlace del archivo de la fuente; vuelva a importarla.", code="fuente")
+    conn = registry.get(origin["connector"])
+    ctx.phase(0.0, 0.35, f"Descargando desde {origin.get('platform', 'Internet')}")
+    dest = wd / "remote.bin"
+    res = net.download(file_url, dest, max_bytes=settings.max_upload_mb * 1024 * 1024,
+                       headers=conn.download_headers(), on_progress=ctx.progress, should_cancel=ctx.cancelled)
+    ext = {"mp4/mov": ".mp4", "matroska/webm": ".webm", "ogg": ".ogv", "avi": ".avi", "mpegts": ".ts"}.get(res["container"], ".bin")
+    aid, final = storage.new_path(ctx.user_id, ext, project_id=project["id"])
+    shutil.move(str(dest), final)
+    a = storage.register(aid=aid, user_id=ctx.user_id, project_id=project["id"], kind="source", path=final,
+                         mime=res["content_type"], meta={"source_id": src["id"], "downloaded_from": origin.get("page_url"),
+                                                         "bytes": res["bytes"]})
+    origin = {**origin, "imported_at": db.now(), "sha256": a["sha256"]}
+    services.update_source(src["id"], original_asset_id=a["id"], origin=origin)
+    return a["id"]
 
 
 @handler("analyze")
 def analyze(ctx: JobContext) -> dict[str, Any]:
     project = services.load_project(ctx.project_id, ctx.user_id)
-    proxy = storage.get(project["proxy_asset_id"])
+    src = services.load_source(ctx.params["source_id"], ctx.user_id, project["id"])
+    proxy = storage.get(src["proxy_asset_id"])
     path = Path(proxy["path"])
-    ctx.phase(0, 0.75, "Detectando y siguiendo rostros")
+    ctx.phase(0, 0.7, "Detectando y siguiendo rostros")
     faces = face_detect.analyze_video(path, interval=0.5, on_progress=ctx.progress, should_cancel=ctx.cancelled)
-    ctx.phase(0.75, 0.85, "Detectando actividad de audio")
+    ctx.phase(0.7, 0.8, "Detectando actividad de audio")
     speech = ffmpeg.detect_speech_segments(path, proxy["duration"] or faces["duration"])
-    ctx.phase(0.85, 0.95, "Detectando cambios de escena")
+    ctx.phase(0.8, 0.9, "Detectando cambios de escena")
     scenes = ffmpeg.detect_scenes(path)
-    ctx.phase(0.95, 1.0, "Generando miniaturas")
-    db.execute("DELETE FROM characters WHERE project_id=?", (project["id"],))
+    ctx.phase(0.9, 1.0, "Generando fotogramas de previsualización")
     wd = _workdir(ctx)
+    sp = wd / "sprite.jpg"
+    sprite_meta = ffmpeg.sprite(path, sp, float(src["duration"] or proxy["duration"] or 1))
+    old_sprite = src.get("sprite_asset_id")
+    sprite = _new_asset(ctx, sp, "thumb", ".jpg", meta={"sprite": sprite_meta, "source_id": src["id"]})
+    if old_sprite:
+        storage.delete_asset(old_sprite)
+    db.execute("DELETE FROM characters WHERE source_id=?", (src["id"],))
+    n_prev = db.one("SELECT COUNT(*) AS n FROM characters WHERE project_id=?", (project["id"],))["n"]
     characters = []
     for i, track in enumerate(faces["tracks"][:12], 1):
         best = max(track, key=lambda d: d["w"] * d["h"])
@@ -113,13 +163,15 @@ def analyze(ctx: JobContext) -> dict[str, Any]:
         thumb = _new_asset(ctx, thumb_src, "thumb", ".jpg")
         cid = db.new_id()
         stats = face_detect.track_stats(track, faces["interval"])
-        db.execute("""INSERT INTO characters(id,project_id,label,track,stats,thumb_asset_id,created_at)
-                      VALUES (?,?,?,?,?,?,?)""",
-                   (cid, project["id"], f"Personaje {i}", db.jdump(track), db.jdump(stats), thumb["id"], db.now()))
+        db.execute("""INSERT INTO characters(id,project_id,source_id,label,track,stats,thumb_asset_id,created_at)
+                      VALUES (?,?,?,?,?,?,?,?)""",
+                   (cid, project["id"], src["id"], f"Personaje {n_prev + i}", db.jdump(track), db.jdump(stats),
+                    thumb["id"], db.now()))
         characters.append(cid)
     analysis = {"detector": faces["detector"], "interval": faces["interval"], "speech_segments": speech,
-                "scenes": scenes, "characters": len(characters)}
-    services.update_project(project["id"], analysis=analysis)
+                "scenes": scenes, "characters": len(characters), "sprite": sprite_meta}
+    services.update_source(src["id"], analysis=analysis, sprite_asset_id=sprite["id"])
+    services.touch_project(project["id"])
     _cleanup(ctx)
     return analysis
 
@@ -148,16 +200,19 @@ def _character(project_id: str, cid: str) -> dict[str, Any]:
 @handler("faceswap")
 def faceswap(ctx: JobContext) -> dict[str, Any]:
     project = services.load_project(ctx.project_id, ctx.user_id)
-    services.require_ready(project)
+    services.require_declaration(project)
     char = _character(project["id"], ctx.params["character_id"])
+    src = services.load_source(char["source_id"], ctx.user_id, project["id"])
+    services.require_source_ready(src)
     if not char["identity_id"]:
         raise AppError("Asigne primero una identidad autorizada al personaje.", code="sin_identidad")
     identity = services.load_identity(char["identity_id"], ctx.user_id)
     require_identity_usable(identity, "imagen")
+    intensity = float(ctx.params.get("intensity", 1.0))
     provider = face_swap.get_provider()
     ctx.phase(0, 0.05, "Preparando la identidad")
     ident = provider.prepare_identity(services.identity_photos(identity["id"]))
-    base = services.working_path(project)
+    base = services.source_working_path(src)
     info = ffmpeg.probe(base)
     fps = info.fps or 30
     wd = _workdir(ctx)
@@ -167,7 +222,7 @@ def faceswap(ctx: JobContext) -> dict[str, Any]:
         end = min(info.duration, start + min(6.0, float(preview.get("duration", 3.0))))
         ctx.phase(0.05, 0.85, "Generando vista previa del rostro")
         seg = wd / "prev_seg.mp4"
-        provider.swap_video(base, seg, ident, char["track"], start=start, end=end, fps=fps,
+        provider.swap_video(base, seg, ident, char["track"], start=start, end=end, fps=fps, intensity=intensity,
                             on_progress=ctx.progress, should_cancel=ctx.cancelled)
         audio = wd / "prev.wav"
         ffmpeg.extract_audio_wav(base, audio, start=start, duration=end - start)
@@ -175,9 +230,10 @@ def faceswap(ctx: JobContext) -> dict[str, Any]:
         services.mux_audio(seg, audio, muxed)
         out = wd / "preview.mp4"
         ctx.phase(0.85, 1.0, "Añadiendo marca de agua")
-        render.burn_watermark(muxed, out, services.watermark_cfg(project), wd, max_height=720)
-        a = _new_asset(ctx, out, "preview", ".mp4", meta={"type": "faceswap", "start": start,
-                                                           "identities": [identity["id"]]})
+        wm = watermark.with_required(project["settings"].get("watermark"), faces_altered=True)
+        render.burn_watermark(muxed, out, wm, wd, max_height=720)
+        a = _new_asset(ctx, out, "preview", ".mp4", meta={"type": "faceswap", "start": start, "source_id": src["id"],
+                                                           "identities": [identity["id"]], "intensity": intensity})
         _cleanup(ctx)
         return {"preview_asset_id": a["id"], "start": start, "end": end}
 
@@ -194,7 +250,7 @@ def faceswap(ctx: JobContext) -> dict[str, Any]:
         e = min(last, s + settings.chunk_seconds)
         ctx.phase(0.05 + 0.8 * k / n_chunks, 0.05 + 0.8 * (k + 1) / n_chunks,
                   f"Sustituyendo rostro: fragmento {k + 1} de {n_chunks}")
-        r = provider.swap_video(base, chunk_path, ident, char["track"], start=s, end=e, fps=fps,
+        r = provider.swap_video(base, chunk_path, ident, char["track"], start=s, end=e, fps=fps, intensity=intensity,
                                 on_progress=ctx.progress, should_cancel=ctx.cancelled)
         for key in totals:
             totals[key] += r.get(key, 0)
@@ -213,18 +269,19 @@ def faceswap(ctx: JobContext) -> dict[str, Any]:
         raise QualityError(f"Sólo se pudo sustituir el rostro en el {ratio:.0%} de los fotogramas en los que "
                            "aparece. Pruebe con fotografías de referencia más parecidas en ángulo e "
                            "iluminación o con un vídeo de mayor calidad.")
-    new = _new_asset(ctx, out, "working", ".mp4", meta={"operation": "faceswap", "character_id": char["id"]})
-    services.set_working(project, new["id"], "faceswap", [identity["id"]])
+    new = _new_asset(ctx, out, "working", ".mp4", meta={"operation": "faceswap", "character_id": char["id"],
+                                                         "source_id": src["id"], "intensity": intensity})
+    services.set_source_working(src, new["id"], "faceswap", [identity["id"]])
     ctx.phase(0.92, 1.0, "Generando copia de revisión")
-    review_id = _review(ctx, project)
-    db.audit("faceswap", ctx.user_id, project["id"], character=char["id"], identity=identity["id"],
-             provider=provider.name)
+    review_id = _review(ctx, project, src)
+    db.audit("faceswap", ctx.user_id, project["id"], source=src["id"], character=char["id"], identity=identity["id"],
+             provider=provider.name, intensity=intensity)
     _cleanup(ctx)
     warnings = []
     if tracked and ratio < 0.9:
         warnings.append(f"El rostro no se sustituyó en el {1 - ratio:.0%} de los fotogramas (cara no detectada).")
     return {"working_asset_id": new["id"], "review_asset_id": review_id, "frames_swapped": totals["swapped"],
-            "frames_missed": totals["missed"], "warnings": warnings}
+            "frames_missed": totals["missed"], "warnings": warnings, "source_id": src["id"]}
 
 
 # ------------------------------------------------------------------ diálogos
@@ -352,23 +409,30 @@ def audio_import(ctx: JobContext) -> dict[str, Any]:
 
 def lipsync_check(project: dict[str, Any], character_id: str, start: float, duration: float) -> dict[str, Any]:
     char = _character(project["id"], character_id)
+    src = db.one("SELECT duration, analysis FROM sources WHERE id=?", (char["source_id"],))
     others = [db.jload(r["track"], []) for r in
-              db.all_("SELECT track FROM characters WHERE project_id=? AND id<>?", (project["id"], character_id))]
-    interval = (project.get("analysis") or {}).get("interval", 0.5)
+              db.all_("SELECT track FROM characters WHERE source_id=? AND id<>?", (char["source_id"], character_id))]
+    analysis = db.jload(src["analysis"], {}) or {}
+    interval = analysis.get("interval", 0.5)
     rep = quality.assess_segment(char["track"], others, start, start + duration, interval)
-    total = services.source_duration(project)
+    total = float(src["duration"] or 0)
+    rep["source_id"] = char["source_id"]
+    rep["available_seconds"] = round(max(0.0, total - start), 2)
     if start + duration > total + 0.05:
         rep["blocking"].append(f"El diálogo ({duration:.1f} s) no cabe: a partir de {start:.1f} s sólo quedan "
                                f"{max(0.0, total - start):.1f} s de vídeo.")
         rep["ok"] = False
+    cuts = [c for c in analysis.get("scenes", []) if start + 0.2 < c < start + duration]
+    if cuts:
+        rep["warnings"].append(f"El diálogo atraviesa un cambio de escena en {cuts[0]:.1f} s: la boca puede no ser "
+                               "visible a partir de ese momento.")
     rep["estimate"] = lipsync.estimate(duration)
     return rep
 
 
 def _publisher(ctx: JobContext):
     def publish(path: Path) -> str:
-        a = _new_asset(ctx, _copy(path), "segment", path.suffix,
-                       meta={"temporary": True})
+        a = _new_asset(ctx, _copy(path), "segment", path.suffix, meta={"temporary": True})
         db.execute("UPDATE assets SET expires_at=? WHERE id=?", (db.now() + 6 * 3600, a["id"]))
         token = sign_asset(a["id"], ttl=6 * 3600, purpose="provider")
         return f"{settings.public_base_url}/api/files/{token}"
@@ -384,11 +448,13 @@ def _copy(path: Path) -> Path:
 @handler("lipsync")
 def lipsync_job(ctx: JobContext) -> dict[str, Any]:
     project = services.load_project(ctx.project_id, ctx.user_id)
-    services.require_ready(project)
+    services.require_declaration(project)
     d = _dialogue(project["id"], ctx.params["dialogue_id"])
     if not d["audio_asset_id"]:
         raise AppError("El diálogo todavía no tiene audio.", code="dialogo_sin_audio")
     char = _character(project["id"], ctx.params["character_id"])
+    src = services.load_source(char["source_id"], ctx.user_id, project["id"])
+    services.require_source_ready(src)
     identities = []
     if char["identity_id"]:
         ident = services.load_identity(char["identity_id"], ctx.user_id)
@@ -412,7 +478,7 @@ def lipsync_job(ctx: JobContext) -> dict[str, Any]:
         raise QualityError("Hay advertencias de calidad que debe revisar y aceptar antes de continuar.",
                            details={"report": rep})
     provider = lipsync.get_provider()
-    base = services.working_path(project)
+    base = services.source_working_path(src)
     wd = _workdir(ctx)
     seg = wd / "segment.mp4"
     seg_audio = wd / "segment_audio.wav"
@@ -429,6 +495,8 @@ def lipsync_job(ctx: JobContext) -> dict[str, Any]:
             cost = round(duration * settings.sync_cost_per_second, 3)
             db.execute("INSERT INTO usage(user_id,provider,units,unit,cost,job_id,created_at) VALUES (?,?,?,?,?,?,?)",
                        (ctx.user_id, provider.name, duration, "segundos", cost, ctx.id, db.now()))
+    elif not seg_audio.exists():
+        ffmpeg.extract_audio_wav(audio_path, seg_audio, start=0, duration=duration)
     ctx.phase(0.8, 0.85, "Comprobando el resultado")
     post = _post_check(out, rep["metrics"].get("coverage", 1.0), duration)
     if preview:
@@ -437,21 +505,24 @@ def lipsync_job(ctx: JobContext) -> dict[str, Any]:
         prev = wd / "preview.mp4"
         ctx.phase(0.85, 1.0, "Añadiendo marca de agua")
         render.burn_watermark(muxed, prev, services.watermark_cfg(project), wd, max_height=720)
-        a = _new_asset(ctx, prev, "preview", ".mp4", meta={"type": "lipsync", "identities": identities})
+        a = _new_asset(ctx, prev, "preview", ".mp4", meta={"type": "lipsync", "identities": identities,
+                                                            "source_id": src["id"]})
         _cleanup(ctx)
         return {"preview_asset_id": a["id"], "quality": rep, "post_check": post}
     ctx.phase(0.85, 0.9, "Integrando el fragmento en el vídeo")
     spliced = wd / "spliced.mp4"
     services.splice(base, out, start, start + duration, spliced)
-    new = _new_asset(ctx, spliced, "working", ".mp4", meta={"operation": "lipsync", "dialogue_id": d["id"]})
-    services.set_working(project, new["id"], "lipsync", identities)
-    _attach_dialogue(project, d, start, duration, ctx.params.get("replace_audio", True))
+    new = _new_asset(ctx, spliced, "working", ".mp4", meta={"operation": "lipsync", "dialogue_id": d["id"],
+                                                             "source_id": src["id"]})
+    services.set_source_working(src, new["id"], "lipsync", identities)
+    _attach_dialogue(project, src["id"], d, start, duration, ctx.params.get("replace_audio", True))
     ctx.phase(0.9, 1.0, "Generando copia de revisión")
-    review_id = _review(ctx, project)
-    db.audit("lipsync", ctx.user_id, project["id"], dialogue=d["id"], character=char["id"],
+    review_id = _review(ctx, project, src)
+    db.audit("lipsync", ctx.user_id, project["id"], source=src["id"], dialogue=d["id"], character=char["id"],
              provider=provider.name, seconds=duration)
     _cleanup(ctx)
-    return {"working_asset_id": new["id"], "review_asset_id": review_id, "quality": rep, "post_check": post}
+    return {"working_asset_id": new["id"], "review_asset_id": review_id, "quality": rep, "post_check": post,
+            "source_id": src["id"]}
 
 
 def _post_check(video: Path, pre_coverage: float, duration: float) -> dict[str, Any]:
@@ -469,20 +540,21 @@ def _post_check(video: Path, pre_coverage: float, duration: float) -> dict[str, 
     return {"ok": not issues, "issues": issues, "coverage": round(coverage, 2)}
 
 
-def _attach_dialogue(project: dict[str, Any], d: dict[str, Any], start: float, duration: float,
+def _attach_dialogue(project: dict[str, Any], source_id: str, d: dict[str, Any], start: float, duration: float,
                      replace_audio: bool) -> None:
     p = services.load_project(project["id"], project["user_id"])
     tl = p["timeline"]
     tl["dialogue"]["items"] = [it for it in tl["dialogue"]["items"] if it.get("dialogue_id") != d["id"]]
     tl["dialogue"]["items"].append({"id": d["id"][:10], "dialogue_id": d["id"], "asset_id": d["audio_asset_id"],
-                                    "source_start": round(start, 3), "volume": 1.0})
+                                    "source_id": source_id, "source_start": round(start, 3), "volume": 1.0})
     if replace_audio:
-        tl["source_audio"]["mutes"].append({"start": round(start, 3), "end": round(start + duration, 3)})
+        tl["source_audio"]["mutes"].append({"source_id": source_id, "start": round(start, 3),
+                                            "end": round(start + duration, 3)})
     tl["subtitles"]["items"] = [s for s in tl["subtitles"]["items"] if s.get("dialogue_id") != d["id"]]
     for s in d["subtitles"]:
         tl["subtitles"]["items"].append({"id": db.new_id()[:10], "start": round(start + s["start"], 3),
                                          "end": round(start + s["end"], 3), "text": s["text"], "base": "source",
-                                         "dialogue_id": d["id"]})
+                                         "source_id": source_id, "dialogue_id": d["id"]})
     services.update_project(p["id"], timeline=tl, timeline_version=p["timeline_version"] + 1)
 
 
@@ -491,7 +563,8 @@ def _attach_dialogue(project: dict[str, Any], d: dict[str, Any], start: float, d
 @handler("review")
 def review_job(ctx: JobContext) -> dict[str, Any]:
     project = services.load_project(ctx.project_id, ctx.user_id)
-    rid = _review(ctx, project)
+    src = services.load_source(ctx.params["source_id"], ctx.user_id, project["id"])
+    rid = _review(ctx, project, src)
     _cleanup(ctx)
     return {"review_asset_id": rid}
 
@@ -499,8 +572,8 @@ def review_job(ctx: JobContext) -> dict[str, Any]:
 @handler("render")
 def render_job(ctx: JobContext) -> dict[str, Any]:
     project = services.load_project(ctx.project_id, ctx.user_id)
-    services.require_ready(project)
-    services.check_identities_still_valid(project, ctx.user_id)
+    services.require_declaration(project)
+    services.check_identities_still_valid(project["id"], ctx.user_id)
     p = ctx.params
     opts = render.RenderOptions(resolution=p["resolution"], fps=int(p["fps"]), codec=p["codec"],
                                 start=p.get("start"), end=p.get("end"))
@@ -510,13 +583,17 @@ def render_job(ctx: JobContext) -> dict[str, Any]:
     wm = services.watermark_cfg(project)
     wd = _workdir(ctx)
     out = wd / "render.mp4"
-    ops = services.operations(project)
+    ops = services.operations(project["id"])
+    credit_lines = services.credits(project)
     meta = provenance.mp4_metadata(project["name"], ops)
+    if credit_lines:
+        meta["copyright"] = " | ".join(credit_lines)[:900]
     ctx.phase(0, 0.9 if not is_preview else 1.0, "Renderizando")
-    info = render.render(main_video=services.working_path(project), tl=tl, aspect=project["aspect"], opts=opts,
-                         asset_paths=services.asset_paths_for_timeline(tl, ctx.user_id), wm_cfg=wm, workdir=wd,
-                         output=out, metadata=meta, on_progress=ctx.progress, should_cancel=ctx.cancelled)
-    identities = sorted(services.used_identities(project))
+    info = render.render(sources=services.timeline_sources(project, ctx.user_id), tl=tl, aspect=project["aspect"],
+                         opts=opts, asset_paths=services.asset_paths_for_timeline(tl, ctx.user_id), wm_cfg=wm,
+                         workdir=wd, output=out, metadata=meta, credits=credit_lines,
+                         on_progress=ctx.progress, should_cancel=ctx.cancelled)
+    identities = sorted(services.used_identities(project["id"]))
     if is_preview:
         a = _new_asset(ctx, out, "preview", ".mp4", meta={"type": "timeline", "identities": identities,
                                                            "start": opts.start, "end": opts.end})
@@ -524,7 +601,7 @@ def render_job(ctx: JobContext) -> dict[str, Any]:
         return {"preview_asset_id": a["id"]}
     ctx.phase(0.9, 1.0, "Añadiendo metadatos de procedencia")
     c2pa = provenance.embed_c2pa(out, provenance.build_manifest(project, ops, services.APP_VERSION), wd)
-    result: dict[str, Any] = {"c2pa": c2pa}
+    result: dict[str, Any] = {"c2pa": c2pa, "credits": credit_lines}
     a = _new_asset(ctx, out, "render", ".mp4",
                    meta={"identities": identities, "resolution": opts.resolution, "fps": opts.fps,
                          "codec": opts.codec, "watermark": wm, "operations": ops, "c2pa": c2pa})
@@ -536,14 +613,26 @@ def render_job(ctx: JobContext) -> dict[str, Any]:
         srt = wd / "subtitulos.srt"
         srt.write_text(subtitles.to_srt(subs), encoding="utf-8")
         result["srt_asset_id"] = _new_asset(ctx, srt, "subtitles", ".srt")["id"]
+    used = set(timeline.used_sources(tl))
+    materials = []
+    for s in services.list_sources(project["id"]):
+        if s["id"] not in used:
+            continue
+        o = s["origin"] or {}
+        materials.append({"etiqueta": s["label"], "tipo": s["kind"], "plataforma": o.get("platform"),
+                          "url": o.get("page_url"), "autor": o.get("author"), "licencia": (o.get("license") or {}).get("name"),
+                          "licencia_url": (o.get("license") or {}).get("url"), "importado": o.get("imported_at"),
+                          "sha256_original": o.get("sha256"),
+                          "declaracion": {k: (s["provenance"] or {}).get(k) for k in
+                                          ("source_type", "rights_holder", "license_url", "can_modify", "can_distribute")}})
     side = provenance.write_sidecar(wd / "procedencia.json", project, ops, services.APP_VERSION,
                                     {"sha256_video": a["sha256"], "marca_de_agua": wm, "c2pa": c2pa,
-                                     "procedencia_material": {k: project["provenance"].get(k) for k in
-                                                              ("source_type", "rights_holder", "license_url")},
+                                     "materiales": materials, "creditos": credit_lines,
                                      "finalidad": project["use_declaration"]["purpose"]})
     result["manifest_asset_id"] = _new_asset(ctx, side, "manifest", ".json")["id"]
-    meta = a["meta"] | {"srt_asset_id": result.get("srt_asset_id"), "manifest_asset_id": result["manifest_asset_id"]}
-    db.execute("UPDATE assets SET meta=? WHERE id=?", (db.jdump(meta), a["id"]))
+    meta2 = a["meta"] | {"srt_asset_id": result.get("srt_asset_id"), "manifest_asset_id": result["manifest_asset_id"],
+                         "credits": credit_lines}
+    db.execute("UPDATE assets SET meta=? WHERE id=?", (db.jdump(meta2), a["id"]))
     db.audit("exportacion", ctx.user_id, project["id"], render=a["id"], sha256=a["sha256"],
              resolution=opts.resolution, codec=opts.codec, identities=identities, ack=p.get("ack"))
     _cleanup(ctx)

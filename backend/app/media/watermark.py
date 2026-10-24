@@ -15,7 +15,9 @@ from ..config import settings
 from ..errors import PolicyError
 
 BASE_TEXT = "VÍDEO EDITADO CON INTELIGENCIA ARTIFICIAL"
-ALLOWED_LABELS = ["PARODIA", "FICCIÓN", "DOBLAJE SINTÉTICO"]
+ALLOWED_LABELS = ["PARODIA", "FICCIÓN", "DOBLAJE SINTÉTICO", "ROSTROS ALTERADOS CON IA"]
+# Etiquetas que se añaden obligatoriamente según el procesamiento realizado.
+FACES_LABEL = "ROSTROS ALTERADOS CON IA"
 POSITIONS = ["top-left", "top-center", "top-right", "bottom-left", "bottom-center", "bottom-right"]
 
 MIN_SIZE, MAX_SIZE, DEFAULT_SIZE = 0.022, 0.06, 0.03
@@ -61,6 +63,14 @@ def validate(cfg: dict[str, Any] | None) -> dict[str, Any]:
         raise PolicyError(f"El aviso personalizado no puede superar {MAX_CUSTOM} caracteres.")
     out["custom"] = custom.replace("\n", " ")
     return out
+
+
+def with_required(cfg: dict[str, Any], *, faces_altered: bool) -> dict[str, Any]:
+    """Añade las etiquetas obligatorias (no eliminables) según las operaciones del proyecto."""
+    cfg = validate(cfg)
+    if faces_altered and FACES_LABEL not in cfg["labels"]:
+        cfg["labels"] = [l for l in ALLOWED_LABELS if l in cfg["labels"] + [FACES_LABEL]]
+    return cfg
 
 
 def lines(cfg: dict[str, Any]) -> list[str]:

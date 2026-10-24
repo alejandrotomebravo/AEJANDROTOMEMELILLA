@@ -41,14 +41,39 @@ REQUIRED_CONFIRMATIONS = {
 }
 
 
-def validate_provenance(p: dict[str, Any]) -> dict[str, Any]:
+def validate_provenance(p: dict[str, Any], origin: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Valida la declaración de derechos sobre una fuente.
+
+    Distingue tres permisos: acceder/descargar (lo da la fuente), modificar y
+    redistribuir el resultado (los declara el usuario), y usar la imagen/voz de
+    quienes aparecen (consentimiento de esas personas)."""
+    origin = origin or {}
     st = p.get("source_type")
     if st not in SOURCE_TYPES:
         raise PolicyError("Indique la procedencia del vídeo.")
     if not p.get("attested"):
         raise PolicyError("Debe declarar que dispone de los derechos necesarios sobre el vídeo.")
+    if not p.get("can_modify"):
+        raise PolicyError("Confirme que tiene permiso para MODIFICAR el vídeo: poder verlo o descargarlo no lo implica.")
     warnings: list[str] = []
     checks: list[str] = []
+    lic = origin.get("license") or {}
+    if origin.get("connector"):
+        p = {**p, "internet_download": True}
+        if not p.get("license_url") and lic.get("url"):
+            p["license_url"] = lic["url"]
+        if not p.get("rights_holder") and origin.get("author"):
+            p["rights_holder"] = origin["author"]
+        if lic.get("allows_modification") is False and st != "autorizado":
+            raise PolicyError(f"La licencia de la fuente ({lic.get('name')}) no permite modificar el vídeo. Sólo puede "
+                              "usarlo con una autorización expresa del titular (opción «autorizado»).")
+        if lic.get("code") not in (None, "unknown"):
+            checks.append(f"Licencia indicada por {origin.get('platform', 'la fuente')}: {lic.get('name')}.")
+        warnings += [n for n in lic.get("notes") or []]
+        if lic.get("allows_commercial") is False:
+            warnings.append("Licencia no comercial: el resultado no podrá usarse con fines comerciales.")
+    if not p.get("can_distribute"):
+        warnings.append("No ha confirmado permiso para difundir el resultado: úselo sólo de forma privada.")
     if p.get("internet_download") and st not in ("licencia", "dominio_publico_cc", "autorizado"):
         raise PolicyError(
             "Que un vídeo esté disponible en Internet no le otorga derecho a modificarlo ni a "
@@ -88,6 +113,8 @@ def validate_provenance(p: dict[str, Any]) -> dict[str, Any]:
         "internet_download": bool(p.get("internet_download")),
         "third_party_people": bool(p.get("third_party_people")),
         "third_party_people_consent": bool(p.get("third_party_people_consent")),
+        "can_modify": True,
+        "can_distribute": bool(p.get("can_distribute")),
         "attested": True,
         "automatic_checks": checks,
         "warnings": warnings,

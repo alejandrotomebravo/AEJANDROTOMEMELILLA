@@ -89,56 +89,98 @@ def _fit_filter(fit: str, w: int, h: int, label_in: str, label_out: str, idx: in
             f"[bgb{idx}][fgs{idx}]overlay=(W-w)/2:(H-h)/2,setsar=1[{label_out}]")
 
 
-def build_command(*, main_video: Path, main_has_audio: bool, tl: dict[str, Any], aspect: str,
-                  opts: RenderOptions, asset_paths: dict[str, Path], wm_cfg: dict[str, Any],
-                  workdir: Path, output: Path, metadata: dict[str, str] | None = None) -> tuple[list[str], float]:
+def _atempo(speed: float) -> str:
+    return ",".join(ffmpeg.atempo_chain(speed)) if abs(speed - 1.0) > 1e-3 else "anull"
+
+
+def build_command(*, sources: dict[str, Path], tl: dict[str, Any], aspect: str, opts: RenderOptions,
+                  asset_paths: dict[str, Path], wm_cfg: dict[str, Any], workdir: Path, output: Path,
+                  metadata: dict[str, str] | None = None, credits: list[str] | None = None,
+                  source_durations: dict[str, float] | None = None) -> tuple[list[str], float]:
+    """Construye la orden de FFmpeg para una línea de tiempo con varias fuentes.
+
+    ``sources``: id de fuente → vídeo de trabajo (siempre con pista de audio, la
+    normalización la garantiza)."""
     clips = tl["video"]["clips"]
     if not clips:
         raise AppError("La línea de tiempo no contiene escenas de vídeo.", code="linea_de_tiempo")
     w, h = output_size(aspect, opts.resolution)
-    args = [settings.ffmpeg, "-y", "-i", str(main_video)]
-    n_inputs = 1
+    used = timeline.used_sources(tl)
+    durations = source_durations or {sid: ffmpeg.probe(sources[sid]).duration for sid in used}
+    args = [settings.ffmpeg, "-y"]
     fc: list[str] = []
-
-    # --- Audio en tiempo de origen: original (+silenciados) + diálogos ---
-    if main_has_audio:
-        src_chain = [f"aformat=sample_rates=48000:channel_layouts=stereo",
-                     f"volume={tl['source_audio']['volume']}"]
-    else:
-        args += ["-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=48000"]
+    n_inputs = 0
+    src_idx: dict[str, int] = {}
+    for sid in used:
+        args += ["-i", str(sources[sid])]
+        src_idx[sid] = n_inputs
         n_inputs += 1
-        src_chain = ["aformat=sample_rates=48000:channel_layouts=stereo"]
-    for m in tl["source_audio"]["mutes"]:
-        src_chain.append(f"volume=enable='between(t,{m['start']},{m['end']})':volume=0")
-    src_label = "0:a" if main_has_audio else f"{n_inputs - 1}:a"
-    fc.append(f"[{src_label}]{','.join(src_chain)}[sa]")
-    mix_inputs = ["[sa]"]
-    for i, it in enumerate(tl["dialogue"]["items"]):
-        args += ["-i", str(asset_paths[it["asset_id"]])]
-        idx = n_inputs
-        n_inputs += 1
-        delay = int(round(it["source_start"] * 1000))
-        vol = it["volume"] * tl["dialogue"]["volume"]
-        fc.append(f"[{idx}:a]aformat=sample_rates=48000:channel_layouts=stereo,volume={vol},"
-                  f"adelay={delay}|{delay}[d{i}]")
-        mix_inputs.append(f"[d{i}]")
-    if len(mix_inputs) > 1:
-        fc.append(f"{''.join(mix_inputs)}amix=inputs={len(mix_inputs)}:normalize=0:duration=first[srcmix]")
-    else:
-        fc.append("[sa]anull[srcmix]")
+    AF = "aformat=sample_rates=48000:channel_layouts=stereo"
 
-    # --- Escenas ---
-    n = len(clips)
-    fc.append(f"[0:v]split={n}" + "".join(f"[vs{i}]" for i in range(n)))
-    fc.append(f"[srcmix]asplit={n}" + "".join(f"[as{i}]" for i in range(n)))
+    # --- Audio en tiempo de origen por fuente: original (+silencios) y diálogos ---
+    per_source_clips = {sid: [i for i, c in enumerate(clips) if c["source_id"] == sid] for sid in used}
+    for sid in used:
+        i = src_idx[sid]
+        chain = [AF, f"volume={tl['source_audio']['volume']}"]
+        for m in tl["source_audio"]["mutes"]:
+            if m["source_id"] == sid:
+                chain.append(f"volume=enable='between(t,{m['start']},{m['end']})':volume=0")
+        fc.append(f"[{i}:a]{','.join(chain)}[o_{i}]")
+        dur = durations[sid]
+        fc.append(f"anullsrc=channel_layout=stereo:sample_rate=48000,atrim=duration={dur:.3f}[z_{i}]")
+        mix = [f"[z_{i}]"]
+        for k, it in enumerate(it for it in tl["dialogue"]["items"] if it["source_id"] == sid):
+            args += ["-i", str(asset_paths[it["asset_id"]])]
+            j = n_inputs
+            n_inputs += 1
+            delay = int(round(it["source_start"] * 1000))
+            fc.append(f"[{j}:a]{AF},volume={it['volume'] * tl['dialogue']['volume']},adelay={delay}|{delay}[d_{i}_{k}]")
+            mix.append(f"[d_{i}_{k}]")
+        if len(mix) > 1:
+            fc.append(f"{''.join(mix)}amix=inputs={len(mix)}:normalize=0:duration=first[dl_{i}]")
+        else:
+            fc.append(f"[z_{i}]anull[dl_{i}]")
+        n = len(per_source_clips[sid])
+        fc.append(f"[{i}:v]split={n}" + "".join(f"[vs_{i}_{k}]" for k in range(n)))
+        fc.append(f"[o_{i}]asplit={n}" + "".join(f"[os_{i}_{k}]" for k in range(n)))
+        fc.append(f"[dl_{i}]asplit={n}" + "".join(f"[ds_{i}_{k}]" for k in range(n)))
+
+    # --- Escenas: recorte, velocidad, encaje, color, fundidos ---
     concat_in = []
-    for i, c in enumerate(clips):
-        fc.append(f"[vs{i}]trim=start={c['in']}:end={c['out']},setpts=PTS-STARTPTS[vt{i}]")
-        fc.append(_fit_filter(tl.get("fit", "contain_blur"), w, h, f"vt{i}", f"vf{i}", i))
-        fc.append(f"[vf{i}]fps={opts.fps}[vr{i}]")
-        fc.append(f"[as{i}]atrim=start={c['in']}:end={c['out']},asetpts=PTS-STARTPTS[at{i}]")
-        concat_in.append(f"[vr{i}][at{i}]")
-    fc.append(f"{''.join(concat_in)}concat=n={n}:v=1:a=1[vc][ac]")
+    seen: dict[str, int] = {}
+    for ci, c in enumerate(clips):
+        i = src_idx[c["source_id"]]
+        k = seen.get(c["source_id"], 0)
+        seen[c["source_id"]] = k + 1
+        sp = c.get("speed", 1.0)
+        length = timeline.clip_length(c)
+        vf = [f"trim=start={c['in']}:end={c['out']}", "setpts=PTS-STARTPTS"]
+        if abs(sp - 1) > 1e-3:
+            vf.append(f"setpts=PTS/{sp}")
+        fc.append(f"[vs_{i}_{k}]{','.join(vf)}[vt{ci}]")
+        fc.append(_fit_filter(tl.get("fit", "contain_blur"), w, h, f"vt{ci}", f"vf{ci}", ci))
+        post = [f"fps={opts.fps}"]
+        col = c.get("color") or {}
+        if col and (col.get("brightness", 0) or col.get("contrast", 1) != 1 or col.get("saturation", 1) != 1):
+            post.append(f"eq=brightness={col.get('brightness', 0)}:contrast={col.get('contrast', 1)}:"
+                        f"saturation={col.get('saturation', 1)}")
+        if c.get("fade_in"):
+            post.append(f"fade=t=in:st=0:d={c['fade_in']}")
+        if c.get("fade_out"):
+            post.append(f"fade=t=out:st={max(0.0, length - c['fade_out']):.3f}:d={c['fade_out']}")
+        post.append(f"trim=duration={length:.3f}")
+        fc.append(f"[vf{ci}]{','.join(post)}[vr{ci}]")
+        fc.append(f"[os_{i}_{k}]atrim=start={c['in']}:end={c['out']},asetpts=PTS-STARTPTS,volume={c.get('volume', 1.0)}[ao{ci}]")
+        fc.append(f"[ds_{i}_{k}]atrim=start={c['in']}:end={c['out']},asetpts=PTS-STARTPTS[ad{ci}]")
+        af = [_atempo(sp)]
+        if c.get("fade_in"):
+            af.append(f"afade=t=in:st=0:d={c['fade_in']}")
+        if c.get("fade_out"):
+            af.append(f"afade=t=out:st={max(0.0, length - c['fade_out']):.3f}:d={c['fade_out']}")
+        af += ["apad", f"atrim=duration={length:.3f}"]
+        fc.append(f"[ao{ci}][ad{ci}]amix=inputs=2:normalize=0:duration=first,{','.join(af)}[ar{ci}]")
+        concat_in.append(f"[vr{ci}][ar{ci}]")
+    fc.append(f"{''.join(concat_in)}concat=n={len(clips)}:v=1:a=1[vc][ac]")
 
     # --- Pistas en tiempo de salida ---
     out_mix = ["[ac]"]
@@ -148,11 +190,10 @@ def build_command(*, main_video: Path, main_has_audio: bool, tl: dict[str, Any],
             continue
         for c in t["clips"]:
             args += ["-i", str(asset_paths[c["asset_id"]])]
-            idx = n_inputs
+            j = n_inputs
             n_inputs += 1
             delay = int(round(c["start"] * 1000))
-            fc.append(f"[{idx}:a]aformat=sample_rates=48000:channel_layouts=stereo,"
-                      f"atrim=start={c['in']}:end={c['out']},asetpts=PTS-STARTPTS,"
+            fc.append(f"[{j}:a]{AF},atrim=start={c['in']}:end={c['out']},asetpts=PTS-STARTPTS,"
                       f"volume={c['volume'] * t['volume']},adelay={delay}|{delay}[t{k}]")
             out_mix.append(f"[t{k}]")
             k += 1
@@ -162,7 +203,8 @@ def build_command(*, main_video: Path, main_has_audio: bool, tl: dict[str, Any],
         fc.append("[ac]anull[am]")
     fc.append("[am]alimiter=limit=0.95[aout0]")
 
-    # --- Capas visuales: subtítulos, gráficos y marca de agua (siempre al final) ---
+    # --- Capas visuales: subtítulos, gráficos, créditos y marca de agua (siempre la última) ---
+    total = timeline.output_duration(tl)
     vchain: list[str] = []
     subs = timeline.output_subtitles(tl) if tl["subtitles"]["enabled"] else []
     if subs:
@@ -178,11 +220,19 @@ def build_command(*, main_video: Path, main_has_audio: bool, tl: dict[str, Any],
                 f"x=(w*{g['x']}-text_w/2)", f"y=(h*{g['y']}-text_h/2)",
                 f"enable='between(t\\,{g['start']}\\,{g['end']})'",
             ]))
+    if credits and tl.get("credits", {}).get("enabled", True):
+        secs = min(total, float(tl.get("credits", {}).get("seconds", 4)))
+        tf = workdir / "credits.txt"
+        tf.write_text("Créditos:\n" + "\n".join(credits), encoding="utf-8")
+        vchain.append("drawtext=" + ":".join([
+            watermark.font_option(), f"textfile={watermark.filter_escape(str(tf))}", "expansion=none",
+            "fontsize=(min(w\\,h)*0.026)", "fontcolor=white", "box=1", "boxcolor=black@0.6", "boxborderw=10",
+            "line_spacing=6", "x=(w-text_w)/2", "y=(h*0.06)",
+            f"enable='gte(t\\,{max(0.0, total - secs):.3f})'"]))
     vchain += watermark.drawtext_filters(wm_cfg, workdir)
     vchain.append("format=yuv420p")
     fc.append(f"[vc]{','.join(vchain)}[vout0]")
 
-    total = timeline.output_duration(tl)
     if opts.start is not None and opts.end is not None:
         s, e = max(0.0, opts.start), min(total, opts.end)
         if e - s < 0.2:
@@ -210,15 +260,13 @@ def build_command(*, main_video: Path, main_has_audio: bool, tl: dict[str, Any],
     return args, total
 
 
-def render(*, main_video: Path, tl: dict[str, Any], aspect: str, opts: RenderOptions,
+def render(*, sources: dict[str, Path], tl: dict[str, Any], aspect: str, opts: RenderOptions,
            asset_paths: dict[str, Path], wm_cfg: dict[str, Any], workdir: Path, output: Path,
-           metadata: dict[str, str] | None = None,
+           metadata: dict[str, str] | None = None, credits: list[str] | None = None,
            on_progress: Callable[[float], None] | None = None,
            should_cancel: Callable[[], bool] | None = None) -> ffmpeg.MediaInfo:
-    info = ffmpeg.probe(main_video)
-    args, total = build_command(main_video=main_video, main_has_audio=info.has_audio, tl=tl,
-                                aspect=aspect, opts=opts, asset_paths=asset_paths, wm_cfg=wm_cfg,
-                                workdir=workdir, output=output, metadata=metadata)
+    args, total = build_command(sources=sources, tl=tl, aspect=aspect, opts=opts, asset_paths=asset_paths,
+                                wm_cfg=wm_cfg, workdir=workdir, output=output, metadata=metadata, credits=credits)
     ffmpeg.run_with_progress(args, total, on_progress, should_cancel)
     return ffmpeg.probe(output)
 

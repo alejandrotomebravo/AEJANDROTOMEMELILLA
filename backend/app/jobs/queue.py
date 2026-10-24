@@ -57,11 +57,14 @@ def get(job_id: str) -> dict[str, Any]:
     return public(j)
 
 
+PRIVATE_PARAMS = {"file_url"}  # enlaces de descarga (pueden ser temporales o ligados a un token)
+
+
 def public(j: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": j["id"], "type": j["type"], "status": j["status"], "progress": round(j["progress"], 3),
         "message": j["message"], "project_id": j["project_id"],
-        "params": db.jload(j["params"], {}), "result": db.jload(j["result"], None),
+        "params": {k: v for k, v in db.jload(j["params"], {}).items() if k not in PRIVATE_PARAMS}, "result": db.jload(j["result"], None),
         "error": j["error"], "error_code": j["error_code"], "attempts": j["attempts"],
         "max_attempts": j["max_attempts"], "created_at": j["created_at"], "started_at": j["started_at"],
         "finished_at": j["finished_at"], "user_id": j["user_id"],

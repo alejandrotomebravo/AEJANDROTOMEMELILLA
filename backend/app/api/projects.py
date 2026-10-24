@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, File, UploadFile
 from pydantic import BaseModel
 
 from .. import db, policy, services, storage
+from ..config import settings
 from ..errors import AppError, Conflict, NotFound
 from ..jobs import queue
 from ..media import ffmpeg, timeline, watermark
@@ -40,33 +41,27 @@ class TimelineIn(BaseModel):
 
 
 def _summary(p: dict[str, Any]) -> dict[str, Any]:
-    thumb = None
-    if p.get("proxy_asset_id"):
-        thumb = db.one("SELECT thumb_asset_id FROM characters WHERE project_id=? LIMIT 1", (p["id"],))
+    thumb = db.one("SELECT thumb_asset_id FROM characters WHERE project_id=? LIMIT 1", (p["id"],))
+    stats = db.one("SELECT COUNT(*) AS n, COALESCE(SUM(size),0) AS bytes FROM assets WHERE project_id=?", (p["id"],))
+    n_src = db.one("SELECT COUNT(*) AS n FROM sources WHERE project_id=? AND status='ready'", (p["id"],))["n"]
+    n_exp = db.one("SELECT COUNT(*) AS n FROM assets WHERE project_id=? AND kind='render'", (p["id"],))["n"]
     return {"id": p["id"], "name": p["name"], "aspect": p["aspect"], "updated_at": p["updated_at"],
-            "created_at": p["created_at"], "has_video": bool(p.get("proxy_asset_id")),
+            "created_at": p["created_at"], "has_video": n_src > 0, "sources": n_src, "exports": n_exp,
+            "storage_bytes": stats["bytes"], "files": stats["n"],
+            "expires_at": (p["updated_at"] + settings.retention_days * 86400) if settings.retention_days else None,
             "thumb_asset_id": thumb["thumb_asset_id"] if thumb else None}
 
 
 def _full(p: dict[str, Any]) -> dict[str, Any]:
-    chars = db.all_("SELECT * FROM characters WHERE project_id=? ORDER BY label", (p["id"],))
-    for c in chars:
-        c["stats"] = db.jload(c["stats"], {})
-        c.pop("track", None)
-    proxy = storage.get(p["proxy_asset_id"]) if p.get("proxy_asset_id") else None
+    from .sources import source_out
+    sources = [source_out(s) for s in services.list_sources(p["id"])]
     return {
         "id": p["id"], "name": p["name"], "aspect": p["aspect"], "settings": p["settings"],
-        "provenance": p["provenance"], "use_declaration": p["use_declaration"],
+        "use_declaration": p["use_declaration"],
         "timeline": p["timeline"], "timeline_version": p["timeline_version"],
-        "proxy_asset_id": p["proxy_asset_id"], "review_asset_id": p["review_asset_id"],
-        "processed": p["working_asset_id"] != p["proxy_asset_id"],
-        "source": ({"duration": proxy["duration"], "width": proxy["width"], "height": proxy["height"],
-                    "fps": proxy["meta"].get("fps")} if proxy else None),
-        "history": [{"operation": h["operation"], "at": h["at"], "index": i,
-                     "current": h["asset_id"] == p["working_asset_id"]}
-                    for i, h in enumerate(p["video_history"])],
-        "analysis": p["analysis"], "characters": chars,
-        "watermark": services.watermark_cfg(p),
+        "sources": sources, "has_video": any(s["status"] == "ready" for s in sources),
+        "watermark": services.watermark_cfg(p), "faces_altered": services.faces_altered(p["id"]),
+        "credits": services.credits(p), "credits_required": services.credits_required(p),
         "created_at": p["created_at"], "updated_at": p["updated_at"],
     }
 
@@ -75,6 +70,19 @@ def _full(p: dict[str, Any]) -> dict[str, Any]:
 def list_projects(user=Depends(current_user)) -> list[dict[str, Any]]:
     rows = db.all_("SELECT * FROM projects WHERE user_id=? ORDER BY updated_at DESC", (user["id"],))
     return [_summary(r) for r in rows]
+
+
+@router.post("/{pid}/duplicate")
+def duplicate_project(pid: str, user=Depends(current_user)) -> dict[str, Any]:
+    """Duplica la configuración y la declaración de uso (no copia vídeos ni procesamientos)."""
+    p = services.load_project(pid, user["id"])
+    nid = db.new_id()
+    db.execute("""INSERT INTO projects(id,user_id,name,aspect,settings,use_declaration,timeline,created_at,updated_at)
+                  VALUES (?,?,?,?,?,?,?,?,?)""",
+               (nid, user["id"], f"{p['name']} (copia)"[:120], p["aspect"], db.jdump(p["settings"]),
+                db.jdump(p["use_declaration"]) if p["use_declaration"] else None, db.jdump(timeline.empty()),
+                db.now(), db.now()))
+    return _full(services.load_project(nid, user["id"]))
 
 
 @router.post("")
@@ -134,18 +142,7 @@ def delete_project(pid: str, user=Depends(current_user)) -> dict[str, bool]:
     return {"ok": True}
 
 
-# ------------------------------------------------------------ procedencia y uso
-
-@router.put("/{pid}/provenance")
-def set_provenance(pid: str, body: dict[str, Any], user=Depends(current_user)) -> dict[str, Any]:
-    services.load_project(pid, user["id"])
-    if body.get("evidence_asset_id"):
-        storage.get_owned(body["evidence_asset_id"], user["id"])
-    clean = policy.validate_provenance(body)
-    services.update_project(pid, provenance=clean)
-    db.audit("declaracion_procedencia", user["id"], pid, **clean)
-    return clean
-
+# ------------------------------------------------------------ declaración de uso
 
 @router.put("/{pid}/use-declaration")
 def set_use_declaration(pid: str, body: dict[str, Any], user=Depends(current_user)) -> dict[str, Any]:
@@ -154,112 +151,6 @@ def set_use_declaration(pid: str, body: dict[str, Any], user=Depends(current_use
     services.update_project(pid, use_declaration=clean)
     db.audit("declaracion_uso", user["id"], pid, **clean)
     return clean
-
-
-@router.post("/{pid}/evidence")
-def upload_evidence(pid: str, file: UploadFile = File(...), user=Depends(current_user)) -> dict[str, Any]:
-    """Documento de licencia o autorización (PDF o imagen)."""
-    services.load_project(pid, user["id"])
-    ext = Path(file.filename or "").suffix.lower()
-    if ext not in {".pdf", ".jpg", ".jpeg", ".png", ".heic"}:
-        raise AppError("Formato no admitido para el documento (PDF, JPG, PNG o HEIC).")
-    aid, dest = storage.new_path(user["id"], ext, project_id=pid)
-    storage.save_stream(file.file, dest, max_bytes=20 * 1024 * 1024)
-    a = storage.register(aid=aid, user_id=user["id"], project_id=pid, kind="evidence", path=dest,
-                         mime=file.content_type)
-    return {"asset_id": a["id"], "sha256": a["sha256"]}
-
-
-# ------------------------------------------------------------ vídeo
-
-@router.post("/{pid}/source")
-def upload_source(pid: str, file: UploadFile = File(...), user=Depends(current_user)) -> dict[str, Any]:
-    p = services.load_project(pid, user["id"])
-    if not p["provenance"]:
-        raise AppError("Antes de importar, declare la procedencia del vídeo.", code="procedencia_pendiente")
-    ext = Path(file.filename or "video.mp4").suffix.lower() or ".mp4"
-    if ext not in VIDEO_EXT:
-        raise AppError("Formato de vídeo no admitido. Use MP4, MOV, M4V, WEBM, MKV, AVI o 3GP.")
-    aid, dest = storage.new_path(user["id"], ext, project_id=pid)
-    storage.save_stream(file.file, dest)
-    try:
-        info = ffmpeg.probe(dest)
-    except Exception:
-        dest.unlink(missing_ok=True)
-        raise AppError("No se reconoce el archivo como vídeo válido.", code="video_no_valido")
-    if not info.has_video:
-        dest.unlink(missing_ok=True)
-        raise AppError("El archivo no contiene una pista de vídeo.", code="sin_video")
-    a = storage.register(aid=aid, user_id=user["id"], project_id=pid, kind="source", path=dest,
-                         mime=file.content_type, duration=info.duration, width=info.width, height=info.height,
-                         meta={"filename": (file.filename or "")[:120]})
-    db.audit("video_importado", user["id"], pid, sha256=a["sha256"], size=a["size"])
-    job = queue.enqueue("import_video", user["id"], pid, {"asset_id": a["id"]}, message="Importando vídeo")
-    return {"job": job, "asset_id": a["id"]}
-
-
-@router.get("/{pid}/analysis")
-def get_analysis(pid: str, user=Depends(current_user)) -> dict[str, Any]:
-    p = services.load_project(pid, user["id"])
-    chars = db.all_("SELECT id,label,stats,thumb_asset_id,identity_id,track FROM characters WHERE project_id=?",
-                    (pid,))
-    for c in chars:
-        c["stats"] = db.jload(c["stats"], {})
-        track = db.jload(c.pop("track"), [])
-        c["presence"] = _presence(track, (p["analysis"] or {}).get("interval", 0.5))
-    return {"analysis": p["analysis"], "characters": chars}
-
-
-def _presence(track: list[dict], interval: float) -> list[dict[str, float]]:
-    ranges: list[dict[str, float]] = []
-    for d in track:
-        if ranges and d["t"] - ranges[-1]["end"] <= interval * 2.5:
-            ranges[-1]["end"] = d["t"]
-        else:
-            ranges.append({"start": d["t"], "end": d["t"]})
-    return ranges
-
-
-class CharacterPatch(BaseModel):
-    label: str | None = None
-    identity_id: str | None = None
-    clear_identity: bool = False
-
-
-@router.patch("/{pid}/characters/{cid}")
-def patch_character(pid: str, cid: str, body: CharacterPatch, user=Depends(current_user)) -> dict[str, Any]:
-    services.load_project(pid, user["id"])
-    c = db.one("SELECT * FROM characters WHERE id=? AND project_id=?", (cid, pid))
-    if not c:
-        raise NotFound("Personaje no encontrado.")
-    if body.label is not None:
-        db.execute("UPDATE characters SET label=? WHERE id=?", (body.label.strip()[:40] or c["label"], cid))
-    if body.clear_identity:
-        db.execute("UPDATE characters SET identity_id=NULL WHERE id=?", (cid,))
-    elif body.identity_id:
-        ident = services.load_identity(body.identity_id, user["id"])
-        policy.require_identity_usable(ident, "imagen")
-        db.execute("UPDATE characters SET identity_id=? WHERE id=?", (ident["id"], cid))
-        db.audit("identidad_asignada", user["id"], pid, character=cid, identity=ident["id"])
-    row = db.one("SELECT id,label,identity_id,thumb_asset_id,stats FROM characters WHERE id=?", (cid,))
-    row["stats"] = db.jload(row["stats"], {})
-    return row
-
-
-@router.post("/{pid}/history/{index}/restore")
-def restore_version(pid: str, index: int, user=Depends(current_user)) -> dict[str, Any]:
-    """Vuelve a una versión anterior del vídeo procesado (index=-1: original)."""
-    p = services.load_project(pid, user["id"])
-    hist = p["video_history"]
-    if index == -1:
-        target = p["proxy_asset_id"]
-    elif 0 <= index < len(hist):
-        target = hist[index]["asset_id"]
-    else:
-        raise NotFound("Versión no encontrada.")
-    services.update_project(pid, working_asset_id=target)
-    job = queue.enqueue("review", user["id"], pid, {}, message="Generando copia de revisión")
-    return {"ok": True, "job": job}
 
 
 # ------------------------------------------------------------ línea de tiempo
@@ -272,7 +163,7 @@ def save_timeline(pid: str, body: TimelineIn, user=Depends(current_user)) -> dic
                        details={"server_version": p["timeline_version"]})
     known = {r["id"] for r in db.all_(
         "SELECT id FROM assets WHERE project_id=? AND kind IN ('dialogue_audio','audio','music')", (pid,))}
-    tl = timeline.validate(body.timeline, services.source_duration(p), known)
+    tl = timeline.validate(body.timeline, services.source_durations(pid), known)
     new_version = p["timeline_version"] + 1
     cur = db.execute("UPDATE projects SET timeline=?, timeline_version=?, updated_at=? WHERE id=? AND timeline_version=?",
                      (db.jdump(tl), new_version, db.now(), pid, body.version))

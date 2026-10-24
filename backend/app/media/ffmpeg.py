@@ -6,6 +6,7 @@ Todas las operaciones se ejecutan como subprocesos con listas de argumentos
 from __future__ import annotations
 
 import json
+import math
 import re
 import subprocess
 from dataclasses import dataclass
@@ -20,6 +21,31 @@ from ..errors import AppError, JobCancelled
 class FFmpegError(AppError):
     code = "ffmpeg"
     status = 500
+
+
+class UnsupportedMedia(AppError):
+    code = "formato_no_admitido"
+    status = 415
+
+
+# Contenedores aceptados para archivos de usuarios o de Internet. Se excluyen
+# formatos que pueden hacer que FFmpeg lea otros archivos o URLs (listas HLS,
+# «concat», secuencias de imágenes, etc.).
+VIDEO_FORMATS = {"mov", "mp4", "m4a", "3gp", "3g2", "mj2", "matroska", "webm", "avi", "ogg", "mpegts", "mpeg", "flv"}
+AUDIO_FORMATS = VIDEO_FORMATS | {"wav", "mp3", "aac", "flac", "caf", "aiff", "w64"}
+UNTRUSTED_INPUT = ["-protocol_whitelist", "file"]
+
+
+def _limits() -> None:  # pragma: no cover - se ejecuta en el proceso hijo
+    """Límites de recursos del subproceso (aislamiento básico frente a archivos malformados)."""
+    try:
+        import resource
+        cpu = settings.media_cpu_seconds
+        resource.setrlimit(resource.RLIMIT_CPU, (cpu, cpu + 30))
+        fsize = settings.media_max_file_mb * 1024 * 1024
+        resource.setrlimit(resource.RLIMIT_FSIZE, (fsize, fsize))
+    except Exception:
+        pass
 
 
 @dataclass
@@ -44,7 +70,7 @@ class MediaInfo:
 
 
 def run(args: list[str], *, timeout: int | None = None) -> subprocess.CompletedProcess:
-    proc = subprocess.run(args, capture_output=True, text=True, timeout=timeout)
+    proc = subprocess.run(args, capture_output=True, text=True, timeout=timeout, preexec_fn=_limits)
     if proc.returncode != 0:
         tail = "\n".join(proc.stderr.strip().splitlines()[-8:])
         raise FFmpegError(f"Fallo en el procesamiento multimedia: {tail}")
@@ -60,16 +86,31 @@ def _fps(rate: str | None) -> float | None:
     return float(rate)
 
 
-def probe(path: str | Path) -> MediaInfo:
-    proc = run([settings.ffprobe, "-v", "error", "-print_format", "json", "-show_format",
-                "-show_streams", str(path)], timeout=60)
+def probe(path: str | Path, untrusted: str | None = None) -> MediaInfo:
+    """Analiza un archivo. ``untrusted`` = "video" | "audio" aplica lista blanca de contenedores."""
+    extra = ["-protocol_whitelist", "file"] if untrusted else []
+    try:
+        proc = run([settings.ffprobe, "-v", "error", *extra, "-print_format", "json", "-show_format",
+                    "-show_streams", str(path)], timeout=60)
+    except FFmpegError:
+        if untrusted:
+            raise UnsupportedMedia("El archivo no es un vídeo o audio válido o está dañado.")
+        raise
     data = json.loads(proc.stdout or "{}")
     streams = data.get("streams", [])
     v = next((s for s in streams if s.get("codec_type") == "video"
               and not s.get("disposition", {}).get("attached_pic")), None)
     a = next((s for s in streams if s.get("codec_type") == "audio"), None)
     fmt = data.get("format", {})
-    duration = float(fmt.get("duration") or (v or a or {}).get("duration") or 0)
+    if untrusted:
+        names = set((fmt.get("format_name") or "").split(","))
+        allowed = VIDEO_FORMATS if untrusted == "video" else AUDIO_FORMATS
+        if not names & allowed:
+            raise UnsupportedMedia(f"Formato de archivo no admitido ({fmt.get('format_name')}).")
+    try:
+        duration = float(fmt.get("duration") or (v or a or {}).get("duration") or 0)
+    except ValueError:
+        duration = 0.0
     rotation = 0
     if v:
         tags = v.get("tags", {})
@@ -113,7 +154,7 @@ def run_with_progress(args: list[str], total_seconds: float,
                       should_cancel: Callable[[], bool] | None = None) -> None:
     """Ejecuta ffmpeg leyendo ``-progress`` para informar del avance (0..1)."""
     full = [args[0], "-hide_banner", "-nostats", "-progress", "pipe:1", *args[1:]]
-    proc = subprocess.Popen(full, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    proc = subprocess.Popen(full, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, preexec_fn=_limits)
     stderr_tail: list[str] = []
     try:
         assert proc.stdout is not None
@@ -139,6 +180,7 @@ def run_with_progress(args: list[str], total_seconds: float,
 
 
 def normalize_video(src: Path, dst: Path, *, max_height: int | None = None, fps: float | None = None,
+                    start: float | None = None, end: float | None = None,
                     on_progress=None, should_cancel=None) -> MediaInfo:
     """Convierte la entrada a MP4 H.264/AAC con fotogramas constantes.
 
@@ -146,9 +188,16 @@ def normalize_video(src: Path, dst: Path, *, max_height: int | None = None, fps:
     una pista de audio silenciosa si el original no tiene audio, para que el
     resto de la cadena pueda asumir que siempre existe.
     """
-    info = probe(src)
+    info = probe(src, untrusted="video")
     if not info.has_video:
         raise AppError("El archivo no contiene una pista de vídeo.", code="sin_video")
+    if not info.duration or info.duration <= 0:
+        raise UnsupportedMedia("No se puede determinar la duración del vídeo (archivo dañado o incompleto).")
+    start = max(0.0, start or 0.0)
+    end = min(info.duration, end) if end else info.duration
+    if end - start < 0.5:
+        raise AppError("El fragmento seleccionado es demasiado corto.", code="fragmento")
+    span = end - start
     target_fps = fps or (info.fps if info.fps and 10 <= info.fps <= 60 else 30)
     target_fps = round(target_fps, 3)
     vf = [f"fps={target_fps}"]
@@ -156,14 +205,14 @@ def normalize_video(src: Path, dst: Path, *, max_height: int | None = None, fps:
         vf.append(f"scale=-2:'min({max_height},ih)'")
     vf.append("scale=trunc(iw/2)*2:trunc(ih/2)*2")
     vf.append("format=yuv420p")
-    args = [settings.ffmpeg, "-y", "-i", str(src)]
+    args = [settings.ffmpeg, "-y", *UNTRUSTED_INPUT, "-ss", f"{start:.3f}", "-i", str(src)]
     if not info.has_audio:
         args += ["-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=48000"]
     args += ["-map", "0:v:0", "-map", "0:a:0" if info.has_audio else "1:a:0",
              "-vf", ",".join(vf), "-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
              "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2",
-             "-movflags", "+faststart", "-t", f"{info.duration:.3f}", str(dst)]
-    run_with_progress(args, info.duration, on_progress, should_cancel)
+             "-movflags", "+faststart", "-t", f"{span:.3f}", "-map_metadata", "-1", str(dst)]
+    run_with_progress(args, span, on_progress, should_cancel)
     return probe(dst)
 
 
@@ -180,8 +229,24 @@ def extract_audio_wav(src: Path, dst: Path, *, start: float | None = None,
 
 
 def to_wav(src: Path, dst: Path, sample_rate: int = 48000) -> MediaInfo:
-    extract_audio_wav(src, dst, sample_rate=sample_rate)
+    """Convierte audio de origen no confiable a WAV PCM."""
+    info = probe(src, untrusted="audio")
+    if not info.has_audio:
+        raise UnsupportedMedia("El archivo no contiene audio.")
+    run([settings.ffmpeg, "-y", *UNTRUSTED_INPUT, "-i", str(src), "-vn", "-ac", "2", "-ar", str(sample_rate),
+         "-c:a", "pcm_s16le", "-map_metadata", "-1", str(dst)])
     return probe(dst)
+
+
+def sprite(src: Path, dst: Path, duration: float, max_frames: int = 60, width: int = 160) -> dict:
+    """Tira de fotogramas de previsualización en una sola imagen (mosaico)."""
+    interval = max(1.0, duration / max_frames)
+    n = max(1, int(math.ceil(duration / interval)))
+    cols = min(10, n)
+    rows = int(math.ceil(n / cols))
+    run([settings.ffmpeg, "-y", "-i", str(src), "-vf",
+         f"fps=1/{interval:.4f},scale={width}:-2,tile={cols}x{rows}", "-frames:v", "1", "-q:v", "5", str(dst)])
+    return {"interval": round(interval, 4), "count": n, "cols": cols, "rows": rows, "tile_width": width}
 
 
 def cut_segment(src: Path, dst: Path, start: float, duration: float, *, with_audio: bool = True) -> None:

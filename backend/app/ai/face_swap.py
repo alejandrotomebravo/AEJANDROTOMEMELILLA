@@ -32,7 +32,7 @@ class FaceSwapProvider(Protocol):
     def prepare_identity(self, photos: list[Path]) -> Any: ...
 
     def swap_video(self, src: Path, dst: Path, identity: Any, track: list[dict], *, start: float,
-                   end: float, fps: float, on_progress: Callable[[float], None] | None,
+                   end: float, fps: float, intensity: float, on_progress: Callable[[float], None] | None,
                    should_cancel: Callable[[], bool] | None) -> dict[str, Any]: ...
 
 
@@ -106,7 +106,11 @@ class InsightFaceProvider:
         return base
 
     def swap_video(self, src: Path, dst: Path, identity: Any, track: list[dict], *, start: float,
-                   end: float, fps: float, on_progress=None, should_cancel=None) -> dict[str, Any]:
+                   end: float, fps: float, intensity: float = 1.0, on_progress=None,
+                   should_cancel=None) -> dict[str, Any]:
+        """``intensity`` (0,3–1,0): mezcla del rostro generado con el original. Valores bajos conservan más
+        rasgos, expresión e iluminación originales, a costa de un parecido menor."""
+        intensity = max(0.3, min(1.0, intensity))
         cap = cv2.VideoCapture(str(src))
         width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
@@ -145,7 +149,11 @@ class InsightFaceProvider:
                     if sims[j] > 0.45:
                         target = faces[j]
                 if target is not None:
-                    frame = self.swapper.get(frame, target, identity, paste_back=True)
+                    result = self.swapper.get(frame, target, identity, paste_back=True)
+                    # El intercambio sólo altera la zona del rostro: mezclar el fotograma entero
+                    # equivale a mezclar localmente esa zona.
+                    frame = result if intensity >= 0.999 else cv2.addWeighted(result, intensity, frame,
+                                                                              1 - intensity, 0)
                     swapped += 1
                 elif box is not None:
                     missed += 1

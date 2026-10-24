@@ -61,12 +61,13 @@ class FaceSwapIn(BaseModel):
     character_id: str
     preview_start: float | None = None
     preview_duration: float = 3.0
+    intensity: float = 1.0
 
 
 @router.post("/projects/{pid}/faceswap")
 def start_faceswap(pid: str, body: FaceSwapIn, user=Depends(current_user)) -> dict[str, Any]:
     p = services.load_project(pid, user["id"])
-    services.require_ready(p)
+    services.require_declaration(p)
     c = db.one("SELECT * FROM characters WHERE id=? AND project_id=?", (body.character_id, pid))
     if not c:
         raise NotFound("Personaje no encontrado.")
@@ -76,7 +77,10 @@ def start_faceswap(pid: str, body: FaceSwapIn, user=Depends(current_user)) -> di
     st = face_swap.status()
     if not st["available"]:
         raise AppError(st["reason"], code="proveedor_no_disponible", status=503)
-    params: dict[str, Any] = {"character_id": c["id"]}
+    if not 0.3 <= body.intensity <= 1.0:
+        raise AppError("La intensidad debe estar entre 0,3 y 1,0.")
+    services.require_source_ready(services.load_source(c["source_id"], user["id"], pid))
+    params: dict[str, Any] = {"character_id": c["id"], "intensity": body.intensity}
     if body.preview_start is not None:
         params["preview"] = {"start": body.preview_start, "duration": body.preview_duration}
     stats = db.jload(c["stats"], {})
@@ -110,7 +114,7 @@ def _dialogue_duration(pid: str, did: str) -> float:
 @router.post("/projects/{pid}/lipsync/check")
 def check_lipsync(pid: str, body: LipsyncIn, user=Depends(current_user)) -> dict[str, Any]:
     p = services.load_project(pid, user["id"])
-    services.require_ready(p)
+    services.require_declaration(p)
     duration = _dialogue_duration(pid, body.dialogue_id)
     if body.preview:
         duration = min(duration, 4.0)
@@ -120,7 +124,7 @@ def check_lipsync(pid: str, body: LipsyncIn, user=Depends(current_user)) -> dict
 @router.post("/projects/{pid}/lipsync")
 def start_lipsync(pid: str, body: LipsyncIn, user=Depends(current_user)) -> dict[str, Any]:
     p = services.load_project(pid, user["id"])
-    services.require_ready(p)
+    services.require_declaration(p)
     duration = _dialogue_duration(pid, body.dialogue_id)
     if body.preview:
         duration = min(duration, 4.0)
@@ -154,6 +158,28 @@ class RenderIn(BaseModel):
     ack_disclaimer: bool = False
 
 
+def rights_warnings(p: dict[str, Any]) -> list[str]:
+    """Avisos de derechos de las fuentes usadas en el montaje frente a la difusión declarada."""
+    out = []
+    used = set(timeline.used_sources(p["timeline"]))
+    dist = (p.get("use_declaration") or {}).get("distribution")
+    for s in services.list_sources(p["id"]):
+        if s["id"] not in used:
+            continue
+        lic = (s["origin"] or {}).get("license") or {}
+        prov = s.get("provenance") or {}
+        if lic.get("allows_commercial") is False and dist == "comercial":
+            out.append(f"«{s['label']}» tiene licencia no comercial y ha declarado uso comercial.")
+        if lic.get("share_alike"):
+            out.append(f"«{s['label']}» exige publicar el resultado con la misma licencia ({lic.get('name')}).")
+        if not prov.get("can_distribute") and dist != "privado":
+            out.append(f"No ha confirmado permiso para difundir «{s['label']}».")
+    if services.credits_required(p) and not p["timeline"].get("credits", {}).get("enabled", True):
+        out.append("Alguna fuente exige atribución y ha desactivado los créditos en pantalla: se incluirán en los "
+                   "metadatos y en el informe, pero asegúrese de citarlos también al publicar.")
+    return out
+
+
 @router.post("/projects/{pid}/estimate")
 def estimate_render(pid: str, body: RenderIn, user=Depends(current_user)) -> dict[str, Any]:
     p = services.load_project(pid, user["id"])
@@ -161,6 +187,8 @@ def estimate_render(pid: str, body: RenderIn, user=Depends(current_user)) -> dic
     render.validate_options(opts)
     est = render.estimate(p["timeline"], p["aspect"], opts)
     est["h265_available"] = render.ffmpeg.has_encoder("libx265")
+    est["rights_warnings"] = rights_warnings(p)
+    est["credits"] = services.credits(p)
     est["disclaimer"] = watermark.DISCLAIMER
     return est
 
@@ -168,7 +196,7 @@ def estimate_render(pid: str, body: RenderIn, user=Depends(current_user)) -> dic
 @router.post("/projects/{pid}/preview")
 def preview_render(pid: str, body: RenderIn, user=Depends(current_user)) -> dict[str, Any]:
     p = services.load_project(pid, user["id"])
-    services.require_ready(p)
+    services.require_declaration(p)
     total = timeline.output_duration(p["timeline"])
     start = body.start or 0.0
     end = body.end if body.end is not None else min(total, start + 15)
@@ -181,11 +209,13 @@ def preview_render(pid: str, body: RenderIn, user=Depends(current_user)) -> dict
 @router.post("/projects/{pid}/export")
 def export(pid: str, body: RenderIn, user=Depends(current_user)) -> dict[str, Any]:
     p = services.load_project(pid, user["id"])
-    services.require_ready(p)
+    services.require_declaration(p)
+    if not p["timeline"]["video"]["clips"]:
+        raise AppError("El montaje no tiene escenas.", code="linea_de_tiempo")
     if not body.ack_disclaimer:
         raise AppError("Debe leer y aceptar el aviso sobre contenido sintético y autorizaciones.",
                        code="aviso_pendiente", details={"disclaimer": watermark.DISCLAIMER})
-    services.check_identities_still_valid(p, user["id"])
+    services.check_identities_still_valid(p["id"], user["id"])
     opts = render.RenderOptions(body.resolution, body.fps, body.codec)
     render.validate_options(opts)
     est = render.estimate(p["timeline"], p["aspect"], opts)

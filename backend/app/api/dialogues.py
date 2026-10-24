@@ -184,3 +184,82 @@ def delete_dialogue(pid: str, did: str, user=Depends(current_user)) -> dict[str,
         storage.delete_asset(d["audio_asset_id"])
     db.execute("DELETE FROM dialogues WHERE id=?", (did,))
     return {"ok": True}
+
+
+class FitIn(BaseModel):
+    text: str
+    speed: float = 1.0
+    source_id: str | None = None
+    character_id: str | None = None
+    start: float = 0.0
+    available: float | None = None
+
+
+def _split_takes(text: str, speed: float, max_seconds: float) -> list[str]:
+    import re as _re
+    sentences = [s.strip() for s in _re.split(r"(?<=[.!?…])\s+", text.strip()) if s.strip()]
+    takes: list[str] = []
+    cur = ""
+    for s in sentences:
+        cand = f"{cur} {s}".strip()
+        if cur and tts.estimate_duration(cand, speed)["seconds"] > max_seconds:
+            takes.append(cur)
+            cur = s
+        else:
+            cur = cand
+    if cur:
+        takes.append(cur)
+    return takes
+
+
+@router.post("/projects/{pid}/dialogues/fit")
+def fit_dialogue(pid: str, body: FitIn, user=Depends(current_user)) -> dict[str, Any]:
+    """Comprueba si el texto cabe en la escena y propone alternativas si no cabe."""
+    services.load_project(pid, user["id"])
+    est = tts.estimate_duration(body.text, body.speed)
+    limits: list[tuple[float, str]] = []
+    total = None
+    if body.source_id:
+        s = services.load_source(body.source_id, user["id"], pid)
+        total = float(s["duration"] or 0)
+        limits.append((total - body.start, "final del vídeo"))
+        cut = next((c for c in (s["analysis"] or {}).get("scenes", []) if c > body.start + 0.2), None)
+        if cut is not None:
+            limits.append((cut - body.start, f"cambio de escena en {cut:.1f} s"))
+    if body.character_id:
+        c = db.one("SELECT track, source_id FROM characters WHERE id=? AND project_id=?", (body.character_id, pid))
+        if c:
+            track = db.jload(c["track"], [])
+            end = body.start
+            for d in track:
+                if d["t"] >= body.start and d["t"] - end <= 1.25:
+                    end = d["t"]
+            if end > body.start:
+                limits.append((end - body.start + 0.25, "el personaje deja de verse"))
+    if body.available is not None:
+        limits.append((body.available, "duración indicada"))
+    if not limits:
+        raise AppError("Indique la escena (fuente e inicio) o la duración disponible.")
+    available, reason = min(limits, key=lambda x: x[0])
+    available = max(0.0, round(available, 2))
+    fits = est["seconds"] <= available
+    suggestions: list[dict[str, Any]] = []
+    if not fits and available > 0:
+        factor = est["seconds"] / available
+        if factor <= 1.25:
+            suggestions.append({"type": "acelerar", "speed": round(min(2.0, body.speed * factor + 0.02), 2),
+                                "text": f"Acelerar la voz un {factor - 1:.0%} (por debajo del 25 % suena natural)."})
+        if total is not None and total - body.start >= est["seconds"]:
+            suggestions.append({"type": "ampliar", "end": round(body.start + est["seconds"], 2),
+                                "text": f"Ampliar el tramo hasta {body.start + est['seconds']:.1f} s"
+                                        f"{' (atravesará el ' + reason + ')' if 'escena' in reason or 'personaje' in reason else ''}."})
+        keep = available / est["seconds"]
+        words = len(body.text.split())
+        suggestions.append({"type": "recortar", "max_words": max(1, int(words * keep)),
+                            "text": f"Recortar el texto a unas {max(1, int(words * keep))} palabras (ahora {words})."})
+        takes = _split_takes(body.text, body.speed, max(available, 1.0))
+        if len(takes) > 1:
+            suggestions.append({"type": "dividir", "takes": takes,
+                                "text": f"Dividir el diálogo en {len(takes)} tomas para varias escenas o planos."})
+    return {"estimated": est["seconds"], "available": available, "limit_reason": reason, "fits": fits,
+            "suggestions": suggestions}
