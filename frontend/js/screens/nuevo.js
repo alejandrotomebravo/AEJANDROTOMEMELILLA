@@ -66,6 +66,6 @@ export async function render(root) {
       field('Finalidad', purpose), field('Descripción breve (opcional)', detail), field('Difusión prevista', distribution),
       h('div', { class: 'field' }, h('span', { class: 'label' }, 'Compromisos (obligatorios)'), ...confirmEls),
       notice('info', `Todos los vídeos llevarán la marca visible «${caps.watermark.base_text}». Esta declaración queda registrada.`))),
-  providerNote(caps) || '',
+  providerNote(),
   h('div', { class: 'row end' }, h('a', { class: 'btn ghost', href: '#/' }, 'Cancelar'), submit)));
 }

@@ -51,13 +51,6 @@ def capabilities(user=Depends(current_user)) -> dict[str, Any]:
     }
 
 
-@router.get("/usage")
-def usage(user=Depends(current_user)) -> dict[str, Any]:
-    rows = db.all_("""SELECT provider, unit, SUM(units) AS units, SUM(cost) AS cost, COUNT(*) AS n
-                      FROM usage WHERE user_id=? GROUP BY provider, unit""", (user["id"],))
-    return {"items": rows, "total_cost_usd": round(sum(r["cost"] or 0 for r in rows), 2)}
-
-
 @router.get("/privacy/export")
 def privacy_export(user=Depends(current_user)) -> dict[str, Any]:
     """Derecho de acceso: resumen de los datos que la aplicación guarda del usuario."""

@@ -1,8 +1,7 @@
 """Pruebas de extremo a extremo de la API del estudio con FFmpeg real y proveedores locales.
 
-Los servicios de pago (Claude, fal.ai) no se llaman: el entorno de pruebas no tiene claves.
-Se usan los proveedores locales reales (guion básico, filtros OpenCV, animática FFmpeg) y un
-binario falso de eSpeak (ver conftest) que ejercita la ruta real de síntesis.
+La app es gratuita: proveedores locales reales (guion por reglas, filtros OpenCV, animática
+FFmpeg) y un binario falso de eSpeak (ver conftest) que ejercita la ruta real de síntesis.
 """
 from __future__ import annotations
 
@@ -121,7 +120,7 @@ def test_full_generation_pipeline(client, auth, env, fake_espeak, tmp_path):
         _job_ok(client, auth, client.post(f"/api/projects/{pid}/scenes/{s['id']}/keyframe", json={},
                                           headers=auth).json()["job"])
         r = client.post(f"/api/projects/{pid}/scenes/{s['id']}/animate", json={}, headers=auth)
-        assert r.status_code == 200 and r.json()["estimate"]["cost_usd"] == 0, r.text
+        assert r.status_code == 200, r.text
         _job_ok(client, auth, r.json()["job"])
     proj = client.get(f"/api/projects/{pid}", headers=auth).json()
     assert len(proj["clips"]) == 2 and all(c["provider"] == "local" for c in proj["clips"])
@@ -173,20 +172,6 @@ def test_full_generation_pipeline(client, auth, env, fake_espeak, tmp_path):
     assert ana_now["status"] == "revoked" and not ana_now["portrait_preview_asset_id"]
     assert proj["clips"] == [] and proj["storyboard"]["scenes"][0]["clip"] is None
     assert client.get(f"/api/assets/{res['render_asset_id']}/url", headers=auth).status_code == 404
-
-
-def test_paid_providers_require_cost_confirmation(client, auth, env, monkeypatch, tmp_path):
-    pid = _project(client, auth)
-    c = client.post(f"/api/projects/{pid}/cast", json={"name": "Robo", "description": "robot"}, headers=auth).json()
-    monkeypatch.setattr(env, "fal_key", "clave-de-prueba")
-    monkeypatch.setattr(env, "image_provider", "auto")
-    monkeypatch.setattr(env, "video_provider", "auto")
-    r = client.post(f"/api/projects/{pid}/cast/{c['id']}/portrait", json={}, headers=auth)
-    assert r.status_code == 402 and r.json()["error"] == "confirmar_coste", r.text
-    assert r.json()["details"]["estimate"]["cost_usd"] > 0
-    r = client.post(f"/api/projects/{pid}/cast/{c['id']}/portrait", json={"confirm_cost": True}, headers=auth)
-    assert r.status_code == 200 and r.json()["provider"] == "fal"
-    assert db.one("SELECT COUNT(*) AS n FROM jobs WHERE status='queued'")["n"] == 1  # no se ejecuta: sin red
 
 
 def test_third_party_consent_link_flow(client, auth):

@@ -1,23 +1,16 @@
-"""Generador: estilos, filtros locales, guion (básico y con Claude simulado), cliente de fal.ai
-simulado y animática local con FFmpeg real.
-
-Las API de pago (Anthropic, fal.ai) se sustituyen por dobles de prueba explícitos: el entorno
-de pruebas no tiene claves ni acceso a esos servicios.
-"""
+"""Generador gratuito y local: estilos, filtros, guion por reglas y animática con FFmpeg real."""
 from __future__ import annotations
 
-import json
 import subprocess
 from pathlib import Path
-from types import SimpleNamespace
 
 import cv2
 import numpy as np
 import pytest
 
-from app import net, policy
-from app.errors import AppError, JobCancelled, PolicyError
-from app.gen import fal, images, llm, styles, video
+from app import policy
+from app.errors import AppError, PolicyError
+from app.gen import images, llm, styles, video
 
 CAST = [{"name": "Ana", "identity_id": "x", "description": "pelo rizado"}, {"name": "Luis", "identity_id": None}]
 
@@ -47,11 +40,11 @@ def test_local_filters_keep_shape(kind):
 
 def test_local_portrait_and_keyframe(env, tmp_path):
     photo = _photo(tmp_path / "foto.jpg")
-    info = images.portrait([photo], "caricatura", "", tmp_path / "retrato.jpg", prov="local")
+    info = images.portrait([photo], "caricatura", "", tmp_path / "retrato.jpg")
     assert info["provider"] == "local" and cv2.imread(str(tmp_path / "retrato.jpg")).shape == (768, 768, 3)
     cast = [{"name": "Ana", "portrait_path": str(tmp_path / "retrato.jpg")}]
     scene = {"title": "En la playa", "description": "Ana celebra con los brazos en alto", "characters": ["Ana"]}
-    images.keyframe(scene, cast, "caricatura", "9:16", tmp_path / "kf.jpg", prov="local")
+    images.keyframe(scene, cast, "caricatura", "9:16", tmp_path / "kf.jpg")
     assert cv2.imread(str(tmp_path / "kf.jpg")).shape == (1280, 720, 3)
     images.watermark_image(tmp_path / "kf.jpg", tmp_path / "kf_prev.jpg")
     a, b = cv2.imread(str(tmp_path / "kf.jpg")), cv2.imread(str(tmp_path / "kf_prev.jpg"))
@@ -78,46 +71,20 @@ def test_normalize_cleans_storyboard():
     assert len({sc["id"] for sc in n["scenes"]}) == 6
 
 
-class _FakeClaude:
-    def __init__(self, payload=None, stop_reason="end_turn"):
-        self.payload, self.stop_reason, self.calls = payload, stop_reason, []
-        self.beta = SimpleNamespace(messages=SimpleNamespace(create=self._create))
-
-    def _create(self, **kw):
-        self.calls.append(kw)
-        text = json.dumps(self.payload) if self.payload is not None else ""
-        return SimpleNamespace(stop_reason=self.stop_reason, content=[SimpleNamespace(type="text", text=text)])
+def test_target_duration_spreads_over_scenes():
+    b = llm.storyboard("Uno. Dos. Tres. Cuatro.", CAST, style_label="x", aspect="9:16", max_scenes=4, target_seconds=32)
+    assert [sc["duration_seconds"] for sc in b["scenes"]] == [8, 8, 8, 8]
 
 
-def _claude(monkeypatch, env, fake):
-    import anthropic
-    monkeypatch.setattr(env, "llm_provider", "anthropic")
-    monkeypatch.setattr(anthropic, "Anthropic", lambda: fake)
-
-
-def test_claude_storyboard_request_shape(env, monkeypatch):
-    scene = {"title": "Playa", "description": "Ana salta", "setting": "Playa", "characters": ["Ana"],
-             "camera": "Plano general", "duration_seconds": 5, "dialogue": [], "keyframe_prompt": "Ana jumping",
-             "video_prompt": "Ana jumps"}
-    fake = _FakeClaude({"refused": False, "refusal_reason": "", "title": "T", "logline": "L", "scenes": [scene]})
-    _claude(monkeypatch, env, fake)
-    out = llm.storyboard("Ana salta en la playa", CAST, style_label="Caricatura", aspect="9:16", max_scenes=4)
-    assert out["provider"] == "anthropic" and out["scenes"][0]["title"] == "Playa"
-    kw = fake.calls[0]
-    assert kw["model"] == "claude-opus-5-5"
-    assert kw["fallbacks"] == "default" and kw["betas"] == ["server-side-fallback-2026-07-01"]
-    assert kw["output_config"]["format"]["type"] == "json_schema"
-    assert "Ana" in kw["messages"][0]["content"] and "<instrucciones>" in kw["messages"][0]["content"]
-
-
-def test_claude_refusals(env, monkeypatch):
-    _claude(monkeypatch, env, _FakeClaude({"refused": True, "refusal_reason": "contenido sexual", "title": "",
-                                            "logline": "", "scenes": []}))
-    with pytest.raises(PolicyError, match="contenido sexual"):
-        llm.storyboard("x", CAST, style_label="x", aspect="1:1", max_scenes=2)
-    _claude(monkeypatch, env, _FakeClaude(None, stop_reason="refusal"))
-    with pytest.raises(PolicyError):
-        llm.storyboard("x", CAST, style_label="x", aspect="1:1", max_scenes=2)
+def test_app_is_free_no_paid_integrations():
+    """Garantía de gratuidad: ningún módulo contiene integraciones con servicios de pago ni red de salida."""
+    root = Path(__file__).resolve().parents[1] / "app"
+    banned = ("anthropic", "fal.run", "fal_key", "elevenlabs", "api.openai", "replicate", "api_key", "urllib.request",
+              "http.client", "requests.")
+    for f in root.rglob("*.py"):
+        text = f.read_text(encoding="utf-8").lower()
+        for word in banned:
+            assert word not in text, f"{f.name} contiene «{word}»"
 
 
 def test_instructions_filter():
@@ -126,87 +93,13 @@ def test_instructions_filter():
     policy.check_instructions("Ana y Luis celebran en la playa de Melilla, en estilo caricatura")
 
 
-# ------------------------------------------------------------------ fal.ai (simulado)
-
-def _fake_net(monkeypatch, statuses, result):
-    calls = []
-
-    def get_json(url, headers=None, method="GET", json_body=None, **kw):
-        calls.append((method, url, json_body, headers))
-        if method == "POST":
-            return {"request_id": "r1", "status_url": "https://queue.fal.run/m/requests/r1/status",
-                    "response_url": "https://queue.fal.run/m/requests/r1"}
-        if url.endswith("/status"):
-            return {"status": statuses.pop(0)}
-        return result
-    monkeypatch.setattr(net, "get_json", get_json)
-    return calls
-
-
-def test_fal_queue_flow(env, monkeypatch):
-    monkeypatch.setattr(env, "fal_key", "clave")
-    monkeypatch.setattr(env, "fal_poll_seconds", 0)
-    calls = _fake_net(monkeypatch, ["IN_QUEUE", "IN_PROGRESS", "COMPLETED"], {"images": [{"url": "https://x/i.jpg"}]})
-    cp: dict = {}
-    out = fal.run("fal-ai/nano-banana/edit", {"prompt": "p"}, checkpoint=cp)
-    assert fal.first_image_url(out) == "https://x/i.jpg"
-    method, url, body, headers = calls[0]
-    assert method == "POST" and url == "https://queue.fal.run/fal-ai/nano-banana/edit" and headers["Authorization"] == "Key clave"
-    assert cp == {}  # el punto de control se limpia al terminar
-    # Reanudación: con el trabajo ya enviado no se vuelve a pagar otro envío
-    calls = _fake_net(monkeypatch, ["COMPLETED"], {"video": {"url": "https://x/v.mp4"}})
-    cp = {"fal:m": {"request_id": "r1", "status_url": "https://queue.fal.run/m/requests/r1/status",
-                    "response_url": "https://queue.fal.run/m/requests/r1"}}
-    assert fal.video_url(fal.run("m", {}, checkpoint=cp)) == "https://x/v.mp4"
-    assert not any(c[0] == "POST" for c in calls)
-
-
-def test_fal_requires_key_and_handles_filters(env, monkeypatch):
-    from app.errors import ProviderUnavailable
-    with pytest.raises(ProviderUnavailable):
-        fal.run("m", {})
-    with pytest.raises(AppError, match="filtro"):
-        fal.first_image_url({"images": []})
-    monkeypatch.setattr(env, "fal_key", "k")
-    _fake_net(monkeypatch, ["IN_QUEUE"], {})
-    with pytest.raises(JobCancelled):
-        fal.run("m", {}, should_cancel=lambda: True)
-
-
-def test_fal_portrait_and_video_arguments(env, monkeypatch, tmp_path):
-    monkeypatch.setattr(env, "fal_key", "k")
-    seen = {}
-
-    def fake_run(model, args, **kw):
-        seen[model] = args
-        return {"images": [{"url": "https://x/i.jpg"}]}
-    monkeypatch.setattr(fal, "run", fake_run)
-    monkeypatch.setattr(fal, "download", lambda url, dest, **kw: cv2.imwrite(str(dest), np.zeros((64, 64, 3), np.uint8)) and dest)
-    info = images.portrait([_photo(tmp_path / "a.jpg")], "caricatura", "", tmp_path / "p.jpg")
-    args = seen[env.fal_image_edit_model]
-    assert info["provider"] == "fal" and args["image_urls"][0].startswith("data:image/jpeg;base64,")
-    assert "caricature" in args["prompt"]
-    a = video._fal_arguments("move", tmp_path / "p.jpg", 10)
-    assert a["duration"] == "10" and a["image_url"].startswith("data:")
-    assert video.estimate(7)["seconds"] == 5 and video.estimate(9)["seconds"] == 10
-    assert video.estimate(9)["cost_usd"] == pytest.approx(0.5)
-
-
-def test_fal_bad_image_rejected(env, monkeypatch, tmp_path):
-    monkeypatch.setattr(env, "fal_key", "k")
-    monkeypatch.setattr(fal, "run", lambda *a, **k: {"images": [{"url": "https://x"}]})
-    monkeypatch.setattr(fal, "download", lambda url, dest, **kw: dest.write_bytes(b"no es una imagen") and dest)
-    with pytest.raises(AppError, match="no es una imagen"):
-        images.portrait([_photo(tmp_path / "a.jpg")], "comic", "", tmp_path / "p.jpg")
-
-
 # ------------------------------------------------------------------ animática local (FFmpeg real)
 
 @pytest.mark.parametrize("camera", ["Plano general con acercamiento", "paneo lateral", "alejamiento"])
 def test_local_animatic(env, tmp_path, camera):
     kf = tmp_path / "kf.jpg"
     cv2.imwrite(str(kf), np.random.default_rng(2).integers(0, 255, (1280, 720, 3), dtype=np.uint8))
-    info = video.animate({"duration_seconds": 4, "camera": camera}, kf, "comic", "9:16", tmp_path / "c.mp4", prov="local")
+    info = video.animate({"duration_seconds": 4, "camera": camera}, kf, "comic", "9:16", tmp_path / "c.mp4")
     out = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "stream=width,height:format=duration",
                           "-of", "default=nw=1", str(tmp_path / "c.mp4")], capture_output=True, text=True).stdout
     assert info["seconds"] == 4 and "width=720" in out and "height=1280" in out

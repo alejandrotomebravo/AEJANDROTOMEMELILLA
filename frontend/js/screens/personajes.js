@@ -2,7 +2,7 @@
 // con el estilo visual elegido y la voz sintética de cada uno.
 import { api, capabilities } from '../api.js';
 import { h, field, select, toast, notice, clear, confirmDialog, spinner } from '../ui.js';
-import { trackJob, withCost, styleSelect, providerNote, img } from '../components.js';
+import { trackJob, generate, styleSelect, providerNote, img } from '../components.js';
 
 const STATUS = { pending: ['Sin retrato', 'warn'], generating: ['Generando…', 'info'], ready: ['Listo', 'ok'],
   failed: ['Error', 'err'], revoked: ['Consentimiento retirado', 'err'] };
@@ -38,9 +38,9 @@ export async function render(root, project) {
     const gen = h('button', { class: 'btn small primary', disabled: c.status === 'revoked', onclick: async () => {
       gen.disabled = true;
       try {
-        const r = await withCost(`/api/projects/${project.id}/cast/${c.id}/portrait`, {}, `El retrato de ${c.name}`);
+        const r = await generate(`/api/projects/${project.id}/cast/${c.id}/portrait`);
         if (r) {
-          const j = await trackJob(jobBox, r.job, { title: `Retrato de ${c.name}`, estimatedSeconds: r.provider === 'fal' ? 25 : 3 });
+          const j = await trackJob(jobBox, r.job, { title: `Retrato de ${c.name}`, estimatedSeconds: 3 });
           if (j.status === 'succeeded') await refresh();
         }
       } catch (e) { toast(e.message, 'error'); } finally { gen.disabled = false; }
@@ -61,8 +61,7 @@ export async function render(root, project) {
       refresh();
     } }, 'Quitar');
     return h('div', { class: 'card cast-card' }, pic,
-      h('div', { class: 'row', style: { marginTop: '8px' } }, h('strong', {}, c.name), h('span', { class: `pill ${kind}` }, label),
-        c.provider ? h('span', { class: 'pill' }, c.provider === 'fal' ? 'IA (fal.ai)' : 'Local') : null),
+      h('div', { class: 'row', style: { marginTop: '8px' } }, h('strong', {}, c.name), h('span', { class: `pill ${kind}` }, label)),
       h('small', { class: 'muted' }, c.identity_id ? `Persona real: ${ident?.display_name || 'autorizada'}` : 'Personaje ficticio'),
       c.error ? notice('error', c.error) : null,
       field('Descripción', desc), h('div', { class: 'cols even' }, field('Estilo', st), field('Voz', voice)),
@@ -102,7 +101,7 @@ export async function render(root, project) {
     } catch (e) { toast(e.message, 'error'); } finally { add.disabled = false; }
   } }, 'Añadir personaje');
 
-  root.append(providerNote(caps) || '',
+  root.append(providerNote(),
     h('div', { class: 'cols' },
       h('div', { class: 'card' }, h('h2', {}, 'Estilo del vídeo'), field('Estilo visual', projStyle,
         'Se aplica a los fotogramas de todas las escenas. Cada personaje puede tener su propio estilo de retrato.'),

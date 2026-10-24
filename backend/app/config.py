@@ -86,11 +86,6 @@ class Settings:
     espeak_binary: str = ""
     piper_command: str = ""
     piper_voices_dir: str = ""
-    elevenlabs_api_key: str = ""
-    elevenlabs_api_base: str = "https://api.elevenlabs.io/v1"
-    elevenlabs_model: str = "eleven_multilingual_v2"
-    elevenlabs_voice_ids: str = ""
-    elevenlabs_cost_per_1k_chars: float = 0.30
 
     # Reconocimiento de voz
     asr_provider: str = "none"  # none | faster_whisper
@@ -117,27 +112,8 @@ class Settings:
     media_max_file_mb: int = 8192
 
     # Generación (v0.3)
-    llm_provider: str = "auto"  # auto | anthropic | basic
-    anthropic_model: str = "claude-opus-5-5"
-    image_provider: str = "auto"  # auto | fal | local
-    video_provider: str = "auto"  # auto | fal | local
-    fal_key: str = ""
-    fal_queue_base: str = "https://queue.fal.run"
-    fal_image_edit_model: str = "fal-ai/nano-banana/edit"
-    fal_image_model: str = "fal-ai/nano-banana"
-    fal_video_model: str = "fal-ai/kling-video/v2.1/standard/image-to-video"
-    fal_image_cost: float = 0.04
-    fal_video_cost_per_second: float = 0.05
-    fal_poll_seconds: float = 4.0
-    fal_timeout_seconds: int = 1200
     max_scenes: int = 12
 
-    # Importación desde Internet
-    http_user_agent: str = "EstudioIA/0.2 (+https://example.invalid/contacto)"
-    outbound_proxy: str = ""
-    allow_private_networks: bool = False  # SOLO pruebas: permite descargar de IPs privadas
-    download_timeout_seconds: int = 60
-    max_redirects: int = 5
 
     @property
     def storage_dir(self) -> Path:
@@ -199,11 +175,6 @@ def load_settings() -> Settings:
         espeak_binary=_str("ESPEAK_BINARY") or (shutil.which("espeak-ng") or shutil.which("espeak") or ""),
         piper_command=_str("PIPER_COMMAND") or (shutil.which("piper") or ""),
         piper_voices_dir=_str("PIPER_VOICES_DIR"),
-        elevenlabs_api_key=_str("ELEVENLABS_API_KEY"),
-        elevenlabs_api_base=_str("ELEVENLABS_API_BASE", "https://api.elevenlabs.io/v1").rstrip("/"),
-        elevenlabs_model=_str("ELEVENLABS_MODEL", "eleven_multilingual_v2"),
-        elevenlabs_voice_ids=_str("ELEVENLABS_VOICE_IDS"),
-        elevenlabs_cost_per_1k_chars=_float("ELEVENLABS_COST_PER_1K_CHARS", 0.30),
         asr_provider=_str("ASR_PROVIDER", "none"),
         whisper_model=_str("WHISPER_MODEL", "small"),
         whisper_device=_str("WHISPER_DEVICE", "cpu"),
@@ -217,28 +188,8 @@ def load_settings() -> Settings:
         ffprobe=_str("FFPROBE_BINARY", "ffprobe"),
         media_cpu_seconds=_int("MEDIA_CPU_SECONDS", 3600),
         media_max_file_mb=_int("MEDIA_MAX_FILE_MB", 8192),
-        http_user_agent=_str("HTTP_USER_AGENT", "EstudioIA/0.2 (+https://example.invalid/contacto)"),
-        outbound_proxy=_str("OUTBOUND_PROXY"),
-        allow_private_networks=_bool("ALLOW_PRIVATE_NETWORKS", False),
-        download_timeout_seconds=_int("DOWNLOAD_TIMEOUT_SECONDS", 60),
-        max_redirects=_int("MAX_REDIRECTS", 5),
-        llm_provider=_str("LLM_PROVIDER", "auto"),
-        anthropic_model=_str("ANTHROPIC_MODEL", "claude-opus-5-5"),
-        image_provider=_str("IMAGE_PROVIDER", "auto"),
-        video_provider=_str("VIDEO_PROVIDER", "auto"),
-        fal_key=_str("FAL_KEY"),
-        fal_queue_base=_str("FAL_QUEUE_BASE", "https://queue.fal.run").rstrip("/"),
-        fal_image_edit_model=_str("FAL_IMAGE_EDIT_MODEL", "fal-ai/nano-banana/edit"),
-        fal_image_model=_str("FAL_IMAGE_MODEL", "fal-ai/nano-banana"),
-        fal_video_model=_str("FAL_VIDEO_MODEL", "fal-ai/kling-video/v2.1/standard/image-to-video"),
-        fal_image_cost=_float("FAL_IMAGE_COST", 0.04),
-        fal_video_cost_per_second=_float("FAL_VIDEO_COST_PER_SECOND", 0.05),
-        fal_poll_seconds=_float("FAL_POLL_SECONDS", 4.0),
-        fal_timeout_seconds=_int("FAL_TIMEOUT_SECONDS", 1200),
         max_scenes=_int("MAX_SCENES", 12),
     )
-    if s.env == "production" and s.allow_private_networks:
-        raise RuntimeError("ALLOW_PRIVATE_NETWORKS no puede activarse en producción (riesgo de SSRF).")
     return s
 
 

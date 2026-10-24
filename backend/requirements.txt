@@ -7,5 +7,3 @@ numpy>=1.26
 opencv-python-headless>=4.10,<5
 # Composición de retratos y fotogramas en modo local
 pillow>=10
-# SDK oficial de Anthropic: Claude escribe el guion y los prompts (sólo se usa con ANTHROPIC_API_KEY)
-anthropic>=0.70

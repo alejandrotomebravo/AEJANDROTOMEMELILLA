@@ -26,12 +26,11 @@ puede haber cambiado: verifíquelo antes del lanzamiento.
 - **Aviso al exportar**: modal que explica que la marca no sustituye las autorizaciones de derechos de autor, imagen o voz; su aceptación se registra.
 - **Cifrado en tránsito** (HTTPS vía Caddy, HSTS); **en reposo** mediante volumen cifrado.
 - **Acceso a archivos** sólo mediante URL firmadas HMAC de 1 h; aislamiento por usuario en todas las consultas.
-- **Proveedores remotos** (sólo si el administrador configura sus claves): **fal.ai** recibe las fotos de las personas del reparto, los retratos y los fotogramas; **Anthropic** recibe las instrucciones y los nombres/descripciones del reparto (nunca fotos); **ElevenLabs**, el texto de los diálogos. Se envían en la propia petición (sin enlaces públicos). En modo local no sale nada del servidor.
+- **Sin proveedores remotos**: todo (fotos, textos, voces, vídeos) se procesa en el propio servidor; nada se envía a terceros.
 - **Conservación**: temporales 24 h, proyectos inactivos 30 días (configurable).
 - **Sin entrenamiento**: la aplicación no contiene ninguna ruta de entrenamiento; los archivos no se comparten salvo con el proveedor de procesamiento elegido.
 - **Registro técnico** sin datos personales (rutas y correos se eliminan de los mensajes de error).
 
 ## 3. Pendiente para un lanzamiento público
 Política de privacidad y condiciones de uso, registro de actividades de tratamiento, evaluación de impacto
-(EIPD) por el tratamiento de imagen/voz a escala, contratos de encargado con fal.ai, Anthropic y ElevenLabs y verificación
-de transferencias internacionales (los tres procesan datos fuera del EEE: revise sus garantías), canal de denuncias de contenido.
+(EIPD) por el tratamiento de imagen/voz a escala, contratos de encargado con el proveedor de alojamiento si el servidor no es propio, canal de denuncias de contenido.

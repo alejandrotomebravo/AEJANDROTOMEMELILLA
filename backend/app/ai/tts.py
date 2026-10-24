@@ -1,14 +1,12 @@
 """Síntesis de voz.
 
-Proveedores (sólo voces de catálogo, NO clonación de voz):
+Proveedores gratuitos y locales (sólo voces de catálogo, NO clonación de voz):
 
 * ``espeak`` — eSpeak NG (GPL-3.0). Local y gratuito; voz robótica, útil
   para pruebas y maquetas de ritmo.
 * ``piper`` — Piper (motor GPL-3.0 en su versión actual «piper1-gpl»; cada
   voz tiene su propia licencia en su MODEL_CARD). Local y gratuito, calidad
   aceptable en CPU. Las voces se descargan aparte a PIPER_VOICES_DIR.
-* ``elevenlabs`` — API comercial de pago. Sólo se ofrecen las voces que el
-  administrador autoriza en ELEVENLABS_VOICE_IDS.
 """
 from __future__ import annotations
 
@@ -16,14 +14,12 @@ import json
 import re
 import shlex
 import subprocess
-import urllib.error
-import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from ..config import settings
-from ..errors import AppError, ProviderUnavailable, RetryableError
+from ..errors import AppError, ProviderUnavailable
 from ..media import ffmpeg
 from ..media.subtitles import syllables
 
@@ -113,20 +109,8 @@ def _piper_voices() -> list[Voice]:
     return out
 
 
-def _elevenlabs_voices() -> list[Voice]:
-    if not settings.elevenlabs_api_key or not settings.elevenlabs_voice_ids:
-        return []
-    out = []
-    for item in settings.elevenlabs_voice_ids.split(","):
-        if ":" in item:
-            vid, name = item.split(":", 1)
-            out.append(Voice(f"elevenlabs:{vid.strip()}", "elevenlabs", f"ElevenLabs · {name.strip()}",
-                             "multi", True, "Voz de catálogo de ElevenLabs según sus condiciones de uso."))
-    return out
-
-
 def list_voices() -> list[Voice]:
-    return _espeak_voices() + _piper_voices() + _elevenlabs_voices()
+    return _espeak_voices() + _piper_voices()
 
 
 def get_voice(voice_id: str) -> Voice:
@@ -136,18 +120,12 @@ def get_voice(voice_id: str) -> Voice:
     raise ProviderUnavailable("La voz seleccionada no está disponible en este servidor.")
 
 
-def cost(voice: Voice, text: str) -> float:
-    if voice.provider == "elevenlabs":
-        return round(len(text) / 1000 * settings.elevenlabs_cost_per_1k_chars, 3)
-    return 0.0
-
-
 # ---------------------------------------------------------------- síntesis
 
 def synthesize_piece(voice: Voice, text: str, out_wav: Path, *, speed: float, pitch: float) -> float:
     """Sintetiza un tramo y devuelve la velocidad que queda pendiente de aplicar con FFmpeg."""
     kind, vid = voice.id.split(":", 1)
-    raw = out_wav.with_suffix(".raw" + (".mp3" if kind == "elevenlabs" else ".wav"))
+    raw = out_wav.with_suffix(".raw.wav")
     remaining = speed
     if kind == "espeak":
         wpm = int(max(80, min(450, 165 * speed)))
@@ -170,26 +148,6 @@ def synthesize_piece(voice: Voice, text: str, out_wav: Path, *, speed: float, pi
         if proc.returncode != 0 or not raw.exists():
             raise AppError("Piper no pudo sintetizar el texto: " + proc.stderr.strip()[-200:], code="tts")
         remaining = speed / (1.0 / length_scale)
-    elif kind == "elevenlabs":
-        api_speed = max(0.7, min(1.2, speed))
-        body = {"text": text, "model_id": settings.elevenlabs_model,
-                "voice_settings": {"stability": 0.5, "similarity_boost": 0.75, "speed": api_speed}}
-        req = urllib.request.Request(
-            f"{settings.elevenlabs_api_base}/text-to-speech/{vid}?output_format=mp3_44100_128",
-            data=json.dumps(body).encode(), method="POST")
-        req.add_header("xi-api-key", settings.elevenlabs_api_key)
-        req.add_header("Content-Type", "application/json")
-        req.add_header("Accept", "audio/mpeg")
-        try:
-            with urllib.request.urlopen(req, timeout=120) as resp:
-                raw.write_bytes(resp.read())
-        except urllib.error.HTTPError as e:
-            if e.code in (429, 500, 502, 503):
-                raise RetryableError(f"ElevenLabs no disponible temporalmente ({e.code}).")
-            raise AppError(f"ElevenLabs rechazó la solicitud ({e.code}).", code="tts")
-        except urllib.error.URLError as e:
-            raise RetryableError(f"No se pudo contactar con ElevenLabs: {e.reason}")
-        remaining = speed / api_speed
     else:
         raise ProviderUnavailable("Proveedor de voz desconocido.")
     ffmpeg.process_audio(raw, out_wav, tempo=remaining, semitones=pitch)

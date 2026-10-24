@@ -90,8 +90,7 @@ def create_tts(pid: str, body: TTSDialogue, user=Depends(current_user)) -> dict[
     db.execute("""INSERT INTO dialogues(id,project_id,mode,text,settings,estimated_duration,created_at)
                   VALUES (?,?,?,?,?,?,?)""", (did, pid, "tts", text, db.jdump(s), est["seconds"], db.now()))
     job = queue.enqueue("tts", user["id"], pid, {"dialogue_id": did}, message="Generando voz")
-    return {"dialogue": _out(db.one("SELECT * FROM dialogues WHERE id=?", (did,))), "job": job,
-            "estimated_cost_usd": tts.cost(voice, text)}
+    return {"dialogue": _out(db.one("SELECT * FROM dialogues WHERE id=?", (did,))), "job": job}
 
 
 @router.put("/projects/{pid}/dialogues/{did}/tts")

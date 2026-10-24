@@ -1,5 +1,4 @@
 # Módulos opcionales que se ejecutan en el propio servidor. Revise las licencias antes de instalar.
-# La generación de imágenes y vídeo con IA usa fal.ai por HTTP (no necesita paquetes adicionales).
 # Subtítulos automáticos por reconocimiento de voz (MIT)
 faster-whisper>=1.0
 # Síntesis de voz local Piper (GPL-3.0). Las voces se descargan aparte.

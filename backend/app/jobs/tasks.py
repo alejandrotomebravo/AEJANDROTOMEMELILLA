@@ -51,12 +51,6 @@ def _image_pair(ctx: JobContext, raw: Path, meta: dict) -> tuple[dict, dict]:
     return a, b
 
 
-def _usage(ctx: JobContext, provider: str, units: float, unit: str, cost: float) -> None:
-    if cost:
-        db.execute("INSERT INTO usage(user_id,provider,units,unit,cost,job_id,created_at) VALUES (?,?,?,?,?,?,?)",
-                   (ctx.user_id, provider, units, unit, cost, ctx.id, db.now()))
-
-
 # ------------------------------------------------------------------ personajes
 
 @handler("portrait")
@@ -88,10 +82,9 @@ def portrait(ctx: JobContext) -> dict[str, Any]:
             storage.delete_asset(c[k])
     db.execute("UPDATE cast_members SET portrait_asset_id=?, portrait_preview_asset_id=?, status='ready', meta=? WHERE id=?",
                (a["id"], b["id"], db.jdump({"provider": info["provider"], "model": info.get("model")}), c["id"]))
-    _usage(ctx, info["provider"], 1, "imagen", info.get("cost_usd", 0))
     db.audit("retrato_generado", ctx.user_id, project["id"], cast=c["id"], identity=c["identity_id"], provider=info["provider"])
     _cleanup(ctx)
-    return {"portrait_preview_asset_id": b["id"], "provider": info["provider"], "cost_usd": info.get("cost_usd", 0)}
+    return {"portrait_preview_asset_id": b["id"], "provider": info["provider"]}
 
 
 # ------------------------------------------------------------------ guion
@@ -171,9 +164,8 @@ def keyframe(ctx: JobContext) -> dict[str, Any]:
     services.save_scene(project["id"], ctx.user_id, scene["id"],
                         keyframe={"asset_id": a["id"], "preview_asset_id": b["id"], "provider": info["provider"],
                                   "prompt": info.get("prompt"), "at": db.now()})
-    _usage(ctx, info["provider"], 1, "imagen", info.get("cost_usd", 0))
     _cleanup(ctx)
-    return {"preview_asset_id": b["id"], "provider": info["provider"], "cost_usd": info.get("cost_usd", 0)}
+    return {"preview_asset_id": b["id"], "provider": info["provider"]}
 
 
 @handler("animate")
@@ -194,7 +186,6 @@ def animate(ctx: JobContext) -> dict[str, Any]:
                              should_cancel=ctx.cancelled)
         ctx.checkpoint["info"] = info
         ctx.save_checkpoint()
-        _usage(ctx, info["provider"], info["seconds"], "segundos", info.get("cost_usd", 0))
     info = ctx.checkpoint["info"]
     ctx.phase(0.85, 0.95, "Preparando la copia de revisión")
     media = ffmpeg.probe(out)
@@ -221,8 +212,7 @@ def animate(ctx: JobContext) -> dict[str, Any]:
     db.audit("clip_generado", ctx.user_id, project["id"], scene=scene["id"], provider=info["provider"],
              identities=identities)
     _cleanup(ctx)
-    return {"preview_asset_id": rv["id"], "source_id": sid, "provider": info["provider"],
-            "cost_usd": info.get("cost_usd", 0)}
+    return {"preview_asset_id": rv["id"], "source_id": sid, "provider": info["provider"]}
 
 
 def attach_scene_dialogues(project_id: str, user_id: str, scene_id: str | None) -> None:
@@ -324,14 +314,10 @@ def synthesize(ctx: JobContext) -> dict[str, Any]:
                (a["id"], finfo.duration, db.jdump(segments), db.jdump(subs), d["id"]))
     if old:
         _release_old_audio(project, old)
-    c = tts.cost(voice, d["text"])
-    if c:
-        db.execute("INSERT INTO usage(user_id,provider,units,unit,cost,job_id,created_at) VALUES (?,?,?,?,?,?,?)",
-                   (ctx.user_id, voice.provider, len(d["text"]), "caracteres", c, ctx.id, db.now()))
     attach_scene_dialogues(project["id"], ctx.user_id, d["settings"].get("scene_id"))
     _cleanup(ctx)
     return {"audio_asset_id": a["id"], "duration": finfo.duration, "segments": segments, "subtitles": subs,
-            "warnings": warnings, "cost_usd": c}
+            "warnings": warnings}
 
 
 def _release_old_audio(project: dict[str, Any], asset_id: str) -> None:

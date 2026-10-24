@@ -27,13 +27,12 @@ proveedor de IA sin reescribir la aplicación.
 3. **Guion e instrucciones**:
    - El usuario describe con sus palabras lo que quiere que ocurra (p. ej. «Ana y Luis celebran en la playa de
      Melilla que han ganado la lotería, en estilo caricatura»).
-   - La IA de lenguaje **genera el prompt**: un guion gráfico con escenas, plano y movimiento de cámara,
+   - La aplicación **genera el prompt**: un guion gráfico con escenas, plano y movimiento de cámara,
      ambientación, acciones, personajes presentes, duración, diálogos y los prompts optimizados para imagen y
      para vídeo de cada escena.
    - Todo es editable; el usuario puede regenerar el guion completo o una escena.
 4. **Escenas**: para cada escena se genera un **fotograma clave** (con los retratos de los personajes como
-   referencia) y, después, el **clip de vídeo** a partir de ese fotograma. Vista previa, repetición y coste estimado
-   antes de lanzar cualquier proceso de pago.
+   referencia) y, después, el **clip de vídeo** a partir de ese fotograma. Vista previa, repetición y tiempo estimado.
 5. **Voces y subtítulos**: diálogos por escena con voz sintética autorizada, grabación o archivo de audio;
    subtítulos automáticos a partir del texto.
 6. **Editor**: línea de tiempo multipista (escenas generadas, voces, música, subtítulos, textos), orden,
@@ -43,19 +42,20 @@ proveedor de IA sin reescribir la aplicación.
    «VÍDEO GENERADO CON INTELIGENCIA ARTIFICIAL», etiquetas adicionales (PARODIA, FICCIÓN, CARICATURA,
    PERSONAJES BASADOS EN PERSONAS REALES), metadatos de procedencia (C2PA si es viable), SRT e informe JSON.
 
-## 3. Proveedores de IA (intercambiables)
+## 3. Gratuidad: procesamiento 100 % local
 
-| Función | Proveedor de pago recomendado | Alternativa local gratuita |
+**Requisito del propietario: la aplicación debe ser gratuita.** No se integra ningún servicio de pago ni API
+externa (ni de guion, ni de imagen, ni de vídeo, ni de voz), no se piden claves y nada sale del servidor.
+
+| Función | Versión actual (CPU, gratuita) | Fase siguiente con GPU NVIDIA propia (gratuita) |
 |---|---|---|
-| Guion gráfico y prompts | Claude (API de Anthropic) con salida estructurada | Guion básico por reglas (una escena por frase) |
-| Retrato estilizado del personaje | Modelo de edición de imagen vía fal.ai (configurable) | Filtros locales (cómic, boceto, acuarela) con OpenCV |
-| Fotograma clave de la escena | Modelo de imagen con referencias vía fal.ai | Composición local: retratos sobre fondo con el título de la escena |
-| Clip de vídeo | Modelo imagen→vídeo vía fal.ai (Kling, Wan…; configurable) | «Animática»: movimiento de cámara (zoom/desplazamiento) sobre el fotograma con FFmpeg |
-| Voz | ElevenLabs / Piper / eSpeak NG | eSpeak NG / Piper |
+| Guion gráfico y prompts | Por reglas (una escena por frase, diálogos entre «…») | Modelo de lenguaje abierto local (Ollama) |
+| Retrato estilizado del personaje | Filtros OpenCV (cómic, anime, boceto, acuarela, pixel art) | SDXL + identidad facial (revisar licencias) |
+| Fotograma clave de la escena | Composición: retratos sobre fondo con el título | SDXL con los retratos como referencia |
+| Clip de vídeo | «Animática»: movimiento de cámara sobre el fotograma (FFmpeg) | Wan 2.2 imagen→vídeo (Apache 2.0) vía ComfyUI |
+| Voz | eSpeak NG / Piper | eSpeak NG / Piper |
 
-No se simulan resultados: si un proveedor no está configurado, la interfaz lo indica y ofrece la alternativa local,
-dejando claro que no es generación por IA. Mostrar siempre coste y tiempo estimados, y pedir confirmación antes de
-cualquier llamada de pago.
+No se simulan resultados: la interfaz deja claro que filtros, composiciones y animáticas no son IA generativa.
 
 ## 4. Derechos, seguridad y privacidad
 
@@ -63,10 +63,9 @@ cualquier llamada de pago.
   mismo; enlace de consentimiento revocable para terceros). Una caricatura de una persona real también lo requiere.
 - Menores bloqueados por defecto. Personas públicas o famosas: no se pueden crear sin su consentimiento.
 - Prohibido: contenido sexual o íntimo, suplantación fraudulenta, acoso, desinformación sobre hechos reales,
-  falsificación de pruebas. Filtro de las instrucciones antes de enviarlas a ningún proveedor; los proveedores
-  aplican además sus propios filtros.
+  falsificación de pruebas. Filtro de las instrucciones y de los diálogos.
 - Revocar el consentimiento elimina fotos, retratos, fotogramas y clips con esa persona y bloquea exportaciones.
-- Informar de qué servicios externos reciben fotos, textos o imágenes; no entrenar modelos con datos del usuario;
+- Ningún dato sale del servidor; no entrenar modelos con datos del usuario;
   plazos de conservación; supresión de cuenta y proyectos; registros sin datos personales.
 - La marca de agua no sustituye a las autorizaciones de imagen, voz o derechos de autor.
 
@@ -74,7 +73,6 @@ cualquier llamada de pago.
 
 - Backend modular (API + cola de trabajos persistente con reintentos, cancelación y progreso), procesamiento
   multimedia con FFmpeg, almacenamiento seguro, PWA instalable.
-- Cada proveedor detrás de una interfaz; claves sólo en el servidor.
-- Pruebas automatizadas sin depender de servicios de pago (dobles de prueba explícitos para las API) y prueba real
-  de extremo a extremo con los proveedores locales.
-- Documentación: arquitectura, instalación, despliegue, costes por minuto generado, licencias y limitaciones.
+- Guion, imagen y vídeo en módulos intercambiables para añadir modelos abiertos con GPU sin tocar la API.
+- Pruebas automatizadas, incluida una que impide introducir servicios de pago, y prueba real de extremo a extremo.
+- Documentación: arquitectura, instalación, despliegue, costes (cero por uso) y tiempos medidos, licencias y limitaciones.

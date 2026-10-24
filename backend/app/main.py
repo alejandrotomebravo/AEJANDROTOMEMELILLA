@@ -37,7 +37,7 @@ async def lifespan(app: FastAPI):
 
 
 def create_app() -> FastAPI:
-    app = FastAPI(title="Estudio IA de vídeo", version="0.3.0", lifespan=lifespan,
+    app = FastAPI(title="Estudio IA de vídeo", version="0.4.0", lifespan=lifespan,
                   docs_url="/api/docs", openapi_url="/api/openapi.json")
     if settings.cors_origins:
         app.add_middleware(CORSMiddleware, allow_origins=settings.cors_origins, allow_credentials=False,

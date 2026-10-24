@@ -9,9 +9,9 @@
 | OpenCV | **4.x** (`opencv-python-headless<5`) | OpenCV 5 eliminó los clasificadores Haar |
 
 | Fuente TTF | DejaVu Sans Bold u otra (`FONT_PATH`) | Para la marca de agua |
-| Claves de API | Opcionales | `ANTHROPIC_API_KEY` (guion), `FAL_KEY` (imágenes y vídeo) |
+| Claves de API | No se necesitan | La aplicación es gratuita y no usa servicios externos |
 
-> La versión 0.3 (generación de vídeo) cambia el esquema de la base de datos (v3). Las bases de datos anteriores no se migran: haga copia y use un `DATA_DIR` nuevo.
+> La versión 0.3/0.4 (generación de vídeo) cambia el esquema de la base de datos (v3). Las bases de datos anteriores no se migran: haga copia y use un `DATA_DIR` nuevo.
 
 ## Instalación local (desarrollo)
 
@@ -30,35 +30,27 @@ Abra `http://localhost:8000`. En el iPhone, use la IP local del ordenador o, mej
 Por defecto (`INLINE_WORKER=true`) la API procesa los trabajos en un hilo propio. Para separarlos:
 `INLINE_WORKER=false` y, en otra terminal, `python -m app.worker`.
 
-## Activar la generación con IA
+## Módulos opcionales (todos gratuitos)
 
-Sin claves, la aplicación funciona en **modo local gratuito** (guion básico, filtros, animática) para probar todo el
-flujo. Para generar con IA, en `.env`:
+La aplicación funciona completa sin configurar nada. Opcionalmente:
 
-1. **Guion con Claude**: `ANTHROPIC_API_KEY=…` (consola de Anthropic). Opcional: `ANTHROPIC_MODEL`.
-2. **Imágenes y vídeo con fal.ai**: `FAL_KEY=…` (panel de fal.ai). Modelos y precios configurables (`FAL_*`).
-   Revise y ajuste `FAL_IMAGE_COST` y `FAL_VIDEO_COST_PER_SECOND` a la tarifa vigente: son los importes que la app
-   muestra antes de cada generación.
-3. **Voces**: `apt install espeak-ng`; Piper (`pip install piper-tts` + voces en `PIPER_VOICES_DIR`); ElevenLabs
-   (`ELEVENLABS_API_KEY`, `ELEVENLABS_VOICE_IDS`).
-4. **Detección facial mejorada para validar fotos (YuNet, MIT)**: `YUNET_MODEL_PATH`.
-5. **Subtítulos automáticos**: `pip install faster-whisper`, `ASR_PROVIDER=faster_whisper`.
-6. **C2PA**: `c2patool` y, en producción, `C2PA_SIGN_CERT`/`C2PA_PRIVATE_KEY`.
+1. **Voces**: `apt install espeak-ng`; Piper, de mejor calidad (`pip install piper-tts` + voces en `PIPER_VOICES_DIR`).
+2. **Detección facial mejorada para validar fotos (YuNet, MIT)**: `YUNET_MODEL_PATH`.
+3. **Subtítulos automáticos**: `pip install faster-whisper`, `ASR_PROVIDER=faster_whisper`.
+4. **C2PA**: `c2patool` y, en producción, `C2PA_SIGN_CERT`/`C2PA_PRIVATE_KEY`.
 
-Con `*_PROVIDER=auto` (por defecto) se usa el servicio si su clave existe. El estado real se ve en
-**Ajustes → Módulos del servidor**.
+El estado real se ve en **Ajustes → Módulos del servidor**.
 
 ## Pruebas automatizadas
 
 ```bash
-cd backend && python -m pytest -q        # 89 pruebas: unidades, cola, red segura, generador y flujo completo con FFmpeg real
+cd backend && python -m pytest -q        # 50 pruebas: unidades, cola, generador y flujo completo con FFmpeg real
 node --test ../frontend/tests.mjs        # lógica del editor y carga de todos los módulos
 ```
 
-Las pruebas no llaman a servicios de pago: Claude y fal.ai se sustituyen por **dobles de prueba explícitos**
-(`tests/test_gen.py`) que comprueban la forma exacta de las peticiones, la cola de fal.ai, la reanudación sin
-volver a pagar, los rechazos y los filtros. El flujo de extremo a extremo (`tests/test_flow.py`) usa los
-proveedores locales reales y un binario falso de eSpeak que recorre la misma ruta de síntesis.
+El flujo de extremo a extremo (`tests/test_flow.py`) usa los módulos reales y un binario falso de eSpeak que
+recorre la misma ruta de síntesis. `test_app_is_free_no_paid_integrations` garantiza que no se reintroducen
+servicios de pago ni conexiones de salida.
 
 ## Mantenimiento
 

@@ -1,7 +1,7 @@
-// Paso 2: instrucciones → guion gráfico con prompts (Claude o modo básico local), editable.
+// Paso 2: instrucciones → guion gráfico por reglas (gratuito), editable.
 import { api, capabilities } from '../api.js';
 import { h, field, toast, notice, clear, modal, checkbox, select, confirmDialog } from '../ui.js';
-import { trackJob, withCost } from '../components.js';
+import { trackJob, generate } from '../components.js';
 
 const uid = () => Math.random().toString(36).slice(2, 12);
 const EXAMPLE = 'Ana llega a la playa de Melilla al amanecer con una tabla de surf. Luis, un robot naranja, la saluda: «¡Hoy es el gran día!». Los dos se ríen y corren hacia el agua. Final con un plano general del atardecer.';
@@ -24,10 +24,9 @@ export async function render(root, project) {
     gen.disabled = true;
     try {
       await api(`/api/projects/${project.id}`, { method: 'PATCH', body: { brief: brief.value } });
-      const r = await withCost(`/api/projects/${project.id}/storyboard/generate`,
-        { max_scenes: Number(maxScenes.value) || 4, target_seconds: Number(target.value) || null }, 'Escribir el guion con Claude');
-      if (!r) return;
-      const j = await trackJob(jobBox, r.job, { title: r.provider === 'anthropic' ? 'Claude está escribiendo el guion' : 'Preparando el guion básico', estimatedSeconds: r.provider === 'anthropic' ? 40 : 2 });
+      const r = await generate(`/api/projects/${project.id}/storyboard/generate`,
+        { max_scenes: Number(maxScenes.value) || 4, target_seconds: Number(target.value) || null });
+      const j = await trackJob(jobBox, r.job, { title: 'Preparando el guion', estimatedSeconds: 2 });
       if (j.status === 'succeeded') {
         const p = await api(`/api/projects/${project.id}`);
         Object.assign(project, p);
@@ -37,9 +36,7 @@ export async function render(root, project) {
     } catch (e) { toast(e.message, 'error'); } finally { gen.disabled = false; }
   } }, board.scenes.length ? 'Volver a generar el guion' : 'Generar guion y prompts');
 
-  const llmNote = caps.llm.provider === 'anthropic'
-    ? notice('info', `El guion lo escribe Claude (${caps.llm.model}). Recibe sus instrucciones y los nombres y descripciones del reparto, nunca las fotos.`)
-    : notice('warn', 'Modo básico local: el guion se crea dividiendo sus instrucciones en escenas (una por frase) y detectando los diálogos entre comillas «…». Para un guion creativo con prompts cinematográficos configure ANTHROPIC_API_KEY.');
+  const llmNote = notice('info', 'Cómo escribir las instrucciones: cada frase será una escena; nombre a los personajes por su nombre y ponga lo que dicen entre comillas «…». Después puede retocar cada escena a mano.');
 
   // ---------------------------------------------- guion editable
   const boardBox = h('div');
@@ -77,11 +74,11 @@ export async function render(root, project) {
         media.length ? h('span', { class: 'pill ok' }, `Con ${media.join(' y ')}`) : null, h('span', { class: 'spacer' }),
         h('button', { class: 'btn small ghost', disabled: i === 0, 'aria-label': 'Subir', onclick: () => { board.scenes.splice(i - 1, 0, board.scenes.splice(i, 1)[0]); markDirty(); draw(); } }, '↑'),
         h('button', { class: 'btn small ghost', disabled: i === board.scenes.length - 1, 'aria-label': 'Bajar', onclick: () => { board.scenes.splice(i + 1, 0, board.scenes.splice(i, 1)[0]); markDirty(); draw(); } }, '↓'),
-        h('button', { class: 'btn small', onclick: () => rewrite(s) }, 'Reescribir con IA'),
+        h('button', { class: 'btn small', onclick: () => rewrite(s) }, 'Reescribir'),
         h('button', { class: 'btn small danger', onclick: () => { board.scenes.splice(i, 1); markDirty(); draw(); } }, 'Eliminar')),
       field('Título', inp('title', { maxlength: 120 })), field('Qué ocurre', area('description', 3)),
       h('div', { class: 'cols even' }, field('Lugar', inp('setting')), field('Cámara', inp('camera', { placeholder: 'Plano medio, acercamiento lento…' }))),
-      h('div', { class: 'cols even' }, h('div', { class: 'field' }, h('span', { class: 'label' }, 'Personajes en escena'), chars), field('Duración (s)', dur, caps.video.provider === 'fal' ? 'El modelo de vídeo genera clips de 5 o 10 s.' : null)),
+      h('div', { class: 'cols even' }, h('div', { class: 'field' }, h('span', { class: 'label' }, 'Personajes en escena'), chars), field('Duración (s)', dur, null)),
       h('div', { class: 'field' }, h('span', { class: 'label' }, 'Diálogos'), dlgBox),
       h('details', {}, h('summary', {}, 'Prompts para los modelos de IA (en inglés)'),
         field('Fotograma clave (imagen)', area('keyframe_prompt', 3)), field('Movimiento (vídeo)', area('video_prompt', 3)),
@@ -96,8 +93,7 @@ export async function render(root, project) {
     if (!v || !ins.value.trim()) return;
     if (dirty && !await save()) return;
     try {
-      const r = await withCost(`/api/projects/${project.id}/scenes/${s.id}/rewrite`, { instruction: ins.value }, 'Reescribir la escena con Claude');
-      if (!r) return;
+      const r = await generate(`/api/projects/${project.id}/scenes/${s.id}/rewrite`, { instruction: ins.value });
       const j = await trackJob(jobBox, r.job, { title: 'Reescribiendo la escena' });
       if (j.status === 'succeeded') { board = structuredClone((await api(`/api/projects/${project.id}`)).storyboard); draw(); }
     } catch (e) { toast(e.message, 'error'); }
@@ -112,7 +108,7 @@ export async function render(root, project) {
     } else {
       const total = board.scenes.reduce((a, s) => a + (Number(s.duration_seconds) || 0), 0);
       boardBox.append(h('div', { class: 'card' }, h('div', { class: 'cols even' }, field('Título del vídeo', title), field('Resumen', logline)),
-        h('small', { class: 'muted' }, `${board.scenes.length} escenas · ${total} s en total${board.provider ? ` · escrito por ${board.provider === 'anthropic' ? 'Claude' : 'el modo básico'}` : ''}`)));
+        h('small', { class: 'muted' }, `${board.scenes.length} escenas · ${total} s en total`)));
       board.scenes.forEach((s, i) => boardBox.append(sceneCard(s, i)));
     }
     boardBox.append(h('div', { class: 'row' },

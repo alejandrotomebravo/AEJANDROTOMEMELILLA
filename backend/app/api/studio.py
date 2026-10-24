@@ -17,20 +17,6 @@ from .projects import cast_out
 
 router = APIRouter(prefix="/api", tags=["estudio"])
 
-LLM_COST_ESTIMATE = 0.05  # USD aproximados por guion con Claude (unos miles de tokens)
-
-
-class Confirm(BaseModel):
-    confirm_cost: bool = False
-
-
-def _need_confirmation(cost: float, confirm: bool, what: str, extra: dict | None = None) -> None:
-    if cost > 0 and not confirm:
-        raise AppError(f"{what} tiene un coste estimado de {cost:.2f} USD con el proveedor de pago. Confírmelo para "
-                       "continuar.", code="confirmar_coste", status=402,
-                       details={"estimate": {"cost_usd": round(cost, 2), **(extra or {})}})
-
-
 @router.get("/styles")
 def list_styles(user=Depends(current_user)) -> list[dict[str, str]]:
     return styles.catalog()
@@ -129,24 +115,19 @@ def delete_cast(pid: str, cid: str, user=Depends(current_user)) -> dict[str, boo
 
 
 @router.post("/projects/{pid}/cast/{cid}/portrait")
-def generate_portrait(pid: str, cid: str, body: Confirm, user=Depends(current_user)) -> dict[str, Any]:
+def generate_portrait(pid: str, cid: str, user=Depends(current_user)) -> dict[str, Any]:
     p = services.load_project(pid, user["id"])
     services.require_declaration(p)
     c = services.load_cast(cid, pid)
     if c["identity_id"]:
         policy.require_identity_usable(services.load_identity(c["identity_id"], user["id"]), "imagen")
-    st = images.status()
-    if not st["available"]:
-        raise AppError(st["reason"], code="proveedor_no_disponible", status=503)
-    _need_confirmation(st.get("cost_per_image", 0) if st.get("paid") else 0, body.confirm_cost, "El retrato")
     job = queue.enqueue("portrait", user["id"], pid, {"cast_id": cid}, message=f"Retrato de {c['name']}")
-    return {"job": job, "provider": st["provider"]}
+    return {"job": job, "provider": images.provider()}
 
 
 # ------------------------------------------------------------ guion
 
 class StoryIn(BaseModel):
-    confirm_cost: bool = False
     max_scenes: int | None = None
     target_seconds: int | None = None
 
@@ -159,14 +140,10 @@ def generate_storyboard(pid: str, body: StoryIn, user=Depends(current_user)) -> 
         raise AppError("Escriba primero las instrucciones del vídeo.", code="instrucciones_vacias")
     policy.check_instructions(p["brief"])
     services.require_cast_usable(p, user["id"])
-    st = llm.status()
-    if not st["available"]:
-        raise AppError(st["reason"], code="proveedor_no_disponible", status=503)
-    _need_confirmation(LLM_COST_ESTIMATE if st.get("paid") else 0, body.confirm_cost, "Escribir el guion con Claude")
     n = max(1, min(settings.max_scenes, body.max_scenes or 6))
     job = queue.enqueue("storyboard", user["id"], pid, {"max_scenes": n, "target_seconds": body.target_seconds},
                         message="Escribiendo el guion")
-    return {"job": job, "provider": st["provider"]}
+    return {"job": job, "provider": llm.provider()}
 
 
 class StoryEdit(BaseModel):
@@ -206,7 +183,6 @@ def save_storyboard(pid: str, body: StoryEdit, user=Depends(current_user)) -> di
 
 class Rewrite(BaseModel):
     instruction: str
-    confirm_cost: bool = False
 
 
 @router.post("/projects/{pid}/scenes/{sid}/rewrite")
@@ -214,8 +190,6 @@ def rewrite_scene(pid: str, sid: str, body: Rewrite, user=Depends(current_user))
     p = services.load_project(pid, user["id"])
     services.find_scene(p, sid)
     policy.check_instructions(body.instruction)
-    st = llm.status()
-    _need_confirmation(LLM_COST_ESTIMATE if st.get("paid") else 0, body.confirm_cost, "Reescribir la escena con Claude")
     return {"job": queue.enqueue("rewrite_scene", user["id"], pid, {"scene_id": sid, "instruction": body.instruction[:1000]},
                                  message="Reescribiendo la escena")}
 
@@ -230,26 +204,20 @@ def _scene_checks(p: dict[str, Any], sid: str, user_id: str) -> dict[str, Any]:
 
 
 @router.post("/projects/{pid}/scenes/{sid}/keyframe")
-def make_keyframe(pid: str, sid: str, body: Confirm, user=Depends(current_user)) -> dict[str, Any]:
+def make_keyframe(pid: str, sid: str, user=Depends(current_user)) -> dict[str, Any]:
     p = services.load_project(pid, user["id"])
     scene = _scene_checks(p, sid, user["id"])
-    st = images.status()
-    if not st["available"]:
-        raise AppError(st["reason"], code="proveedor_no_disponible", status=503)
-    _need_confirmation(st.get("cost_per_image", 0) if st.get("paid") else 0, body.confirm_cost, "El fotograma clave")
     return {"job": queue.enqueue("keyframe", user["id"], pid, {"scene_id": sid}, message=f"Fotograma: {scene['title']}"),
-            "provider": st["provider"]}
+            "provider": images.provider()}
 
 
 @router.post("/projects/{pid}/scenes/{sid}/animate")
-def make_clip(pid: str, sid: str, body: Confirm, user=Depends(current_user)) -> dict[str, Any]:
+def make_clip(pid: str, sid: str, user=Depends(current_user)) -> dict[str, Any]:
     p = services.load_project(pid, user["id"])
     scene = _scene_checks(p, sid, user["id"])
     if not (scene.get("keyframe") or {}).get("asset_id"):
         raise AppError("Genere primero el fotograma clave.", code="fotograma_pendiente")
-    video.require_available()
     est = video.estimate(scene["duration_seconds"])
-    _need_confirmation(est["cost_usd"], body.confirm_cost, "El clip de vídeo", est)
     return {"job": queue.enqueue("animate", user["id"], pid, {"scene_id": sid}, message=f"Clip: {scene['title']}"),
             "estimate": est}
 
@@ -257,18 +225,15 @@ def make_clip(pid: str, sid: str, body: Confirm, user=Depends(current_user)) -> 
 @router.get("/projects/{pid}/generation-estimate")
 def generation_estimate(pid: str, user=Depends(current_user)) -> dict[str, Any]:
     p = services.load_project(pid, user["id"])
-    img = images.status()
     pending_portraits = sum(1 for c in services.list_cast(pid) if c["status"] != "ready")
     sc = services.scenes(p)
     pending_kf = sum(1 for s in sc if not s.get("keyframe"))
     pending_clips = [s for s in sc if not s.get("clip")]
-    img_cost = img.get("cost_per_image", 0) if img.get("paid") else 0
-    clip_cost = sum(video.estimate(s["duration_seconds"])["cost_usd"] for s in pending_clips)
     wait = sum(video.estimate(s["duration_seconds"])["estimated_wait_seconds"] for s in pending_clips)
-    return {"image_provider": img["provider"], "video_provider": video.provider(), "llm_provider": llm.provider(),
+    return {"image_provider": images.provider(), "video_provider": video.provider(), "llm_provider": llm.provider(),
             "pending": {"portraits": pending_portraits, "keyframes": pending_kf, "clips": len(pending_clips)},
-            "cost_usd": round((pending_portraits + pending_kf) * img_cost + clip_cost, 2),
-            "estimated_wait_seconds": wait + (pending_portraits + pending_kf) * (20 if img["provider"] == "fal" else 2),
+            "cost_usd": 0.0,
+            "estimated_wait_seconds": wait + (pending_portraits + pending_kf) * 2,
             "video_seconds": sum(video.estimate(s["duration_seconds"])["seconds"] for s in sc)}
 
 

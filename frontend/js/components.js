@@ -1,6 +1,6 @@
 // Componentes reutilizables: progreso de trabajos, reproductor y pasos del asistente.
-import { api, assetUrl, waitJob, ApiError } from './api.js';
-import { h, clear, fmtDuration, fmtMoney, toast, notice, modal, select } from './ui.js';
+import { api, assetUrl, waitJob } from './api.js';
+import { h, clear, fmtDuration, toast, notice, select } from './ui.js';
 
 const STATUS = {
   queued: 'En cola', running: 'Procesando', succeeded: 'Completado', failed: 'Error', cancelled: 'Cancelado',
@@ -97,37 +97,17 @@ export function stepper(pid, current) {
     }, h('span', { class: 'n' }, i + 1), h('span', { class: 't' }, label))));
 }
 
-// Llama a un endpoint de generación. Si el servidor responde 402 «confirmar_coste» (proveedor de
-// pago), muestra el coste estimado y repite la petición con confirm_cost sólo si el usuario acepta.
-export async function withCost(path, body = {}, what = 'Esta generación') {
-  try {
-    return await api(path, { method: 'POST', body });
-  } catch (e) {
-    if (!(e instanceof ApiError) || e.code !== 'confirmar_coste') throw e;
-    const est = e.details?.estimate || {};
-    const ok = await modal({ title: 'Confirmar coste', body: h('div', {},
-      h('p', {}, `${what} usa un proveedor de pago.`),
-      h('dl', { class: 'kv' }, h('dt', {}, 'Coste estimado'), h('dd', {}, h('strong', {}, fmtMoney(est.cost_usd || 0))),
-        est.seconds ? [h('dt', {}, 'Duración del clip'), h('dd', {}, `${est.seconds} s`)] : null,
-        est.estimated_wait_seconds ? [h('dt', {}, 'Espera aprox.'), h('dd', {}, fmtDuration(est.estimated_wait_seconds))] : null),
-      h('small', { class: 'muted' }, 'Importe orientativo según las tarifas configuradas en el servidor; la factura real es la del proveedor.')),
-    actions: [{ label: 'Cancelar', value: false }, { label: 'Confirmar y generar', value: true, kind: 'primary' }] });
-    if (!ok) return null;
-    return api(path, { method: 'POST', body: { ...body, confirm_cost: true } });
-  }
+// Lanza una generación (todas son gratuitas y se ejecutan en el propio servidor).
+export function generate(path, body = {}) {
+  return api(path, { method: 'POST', body });
 }
 
 export function styleSelect(styles, value, onchange) {
   return select(styles.map(s => [s.key, s.label]), value, onchange);
 }
 
-export function providerNote(caps) {
-  const local = [];
-  if (caps.llm.provider !== 'anthropic') local.push('guion');
-  if (caps.image.provider !== 'fal') local.push('imágenes');
-  if (caps.video.provider !== 'fal') local.push('vídeo');
-  if (!local.length) return null;
-  return notice('warn', h('strong', {}, 'Modo local gratuito: '),
-    `${local.join(', ')} se generan sin IA generativa (filtros de imagen, composición y animática con movimiento de cámara). `,
-    'Sirve para probar el flujo; para resultados reales el administrador debe configurar ANTHROPIC_API_KEY y FAL_KEY.');
+export function providerNote() {
+  return notice('info', h('strong', {}, 'Gratuito y en su servidor: '),
+    'el guion se crea por reglas, las imágenes con filtros de estilo y composición, y los clips como animática con movimiento de cámara. ',
+    'No es IA generativa de vídeo ni se envía nada a servicios externos.');
 }

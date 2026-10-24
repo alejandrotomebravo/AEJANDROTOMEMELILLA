@@ -8,7 +8,7 @@ from . import db, storage
 from .errors import AppError, ConsentError, NotFound
 from .media import timeline, watermark
 
-APP_VERSION = "0.3.0"
+APP_VERSION = "0.4.0"
 
 
 # ------------------------------------------------------------------ proyectos
