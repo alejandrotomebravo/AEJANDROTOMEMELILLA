@@ -224,3 +224,15 @@ def test_internet_origin_with_nd_license_requires_explicit_authorization(env):
         policy.validate_provenance(_prov(source_type="licencia"), origin)
     ok = policy.validate_provenance(_prov(source_type="autorizado", rights_holder="Autora"), origin)
     assert ok["internet_download"] is True
+
+
+def test_average_identity_with_real_insightface_face():
+    common = pytest.importorskip("insightface.app.common")
+    import numpy as np
+    from app.ai.face_swap import average_identity
+    rng = np.random.default_rng(0)
+    faces = [common.Face(bbox=np.array([0, 0, s, s], dtype=float), embedding=rng.normal(size=512) * 20) for s in (50, 80)]
+    expected = np.mean([f.normed_embedding for f in faces], axis=0)
+    out = average_identity(faces)
+    assert np.allclose(out.normed_embedding, expected / np.linalg.norm(expected))
+    assert out is faces[1]  # la foto con el rostro más grande

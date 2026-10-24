@@ -1,6 +1,9 @@
 # Módulos de IA opcionales. Revise las licencias antes de instalar (docs/ARQUITECTURA.md).
 # Sustitución facial (código MIT; modelos SÓLO uso no comercial salvo licencia de InsightFace)
 insightface>=0.7.3
+# ¡Atención! insightface 2.x instala opencv-python 5, que elimina los clasificadores Haar usados por la
+# detección facial por defecto. Después de instalarlo, ejecute:
+#   pip uninstall -y opencv-python opencv-python-headless && pip install "opencv-python-headless>=4.10,<5"
 onnxruntime>=1.18          # o onnxruntime-gpu en servidores con CUDA
 # Subtítulos automáticos por reconocimiento de voz (MIT)
 faster-whisper>=1.0

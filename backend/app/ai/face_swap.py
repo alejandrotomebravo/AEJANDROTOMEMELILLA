@@ -69,6 +69,18 @@ def seconds_per_second() -> float:
             else settings.faceswap_seconds_per_second_cpu)
 
 
+def average_identity(faces: list[Any]) -> Any:
+    """Identidad estable a partir de varias fotos: promedia los vectores faciales normalizados.
+
+    En InsightFace ``normed_embedding`` es una propiedad calculada a partir de
+    ``embedding``: sólo se modifica ``embedding`` (conservando su norma)."""
+    base = max(faces, key=lambda f: (f.bbox[2] - f.bbox[0]) * (f.bbox[3] - f.bbox[1]))
+    emb = np.mean([f.normed_embedding for f in faces], axis=0)
+    emb = emb / np.linalg.norm(emb)
+    base.embedding = emb * np.linalg.norm(base.embedding)
+    return base
+
+
 class InsightFaceProvider:
     name = "insightface"
     license_note = "InsightFace inswapper_128: uso no comercial salvo licencia."
@@ -97,13 +109,8 @@ class InsightFaceProvider:
                 faces.append(found[0])
         if not faces:
             raise QualityError("No se ha podido extraer un rostro válido de las fotografías de la identidad.")
-        # Promedio de embeddings de varias perspectivas para una identidad más estable.
-        base = max(faces, key=lambda f: (f.bbox[2] - f.bbox[0]) * (f.bbox[3] - f.bbox[1]))
-        emb = np.mean([f.normed_embedding for f in faces], axis=0)
-        emb = emb / np.linalg.norm(emb)
-        base.embedding = emb * np.linalg.norm(base.embedding)
-        base.normed_embedding = emb
-        return base
+        return average_identity(faces)
+
 
     def swap_video(self, src: Path, dst: Path, identity: Any, track: list[dict], *, start: float,
                    end: float, fps: float, intensity: float = 1.0, on_progress=None,
