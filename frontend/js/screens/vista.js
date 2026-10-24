@@ -5,7 +5,7 @@ import { trackJob } from '../components.js';
 import { outputDuration, outputToSource } from '../history.js';
 
 export async function render(root, project) {
-  if (!project.proxy_asset_id) { root.append(notice('warn', 'Importe primero un vídeo.')); return; }
+  if (!project.has_video) { root.append(notice('warn', 'Importe primero un vídeo.')); return; }
   const tl = project.timeline;
   const total = outputDuration(tl);
   const start = h('input', { type: 'number', min: 0, max: total, step: 0.5, value: 0 });
@@ -34,16 +34,27 @@ async function showCompare(container, project, previewId, offset) {
   const res = h('video', { class: 'player', controls: true, playsinline: true });
   const orig = h('video', { class: 'player', playsinline: true, muted: true });
   res.src = await assetUrl(previewId);
-  orig.src = await assetUrl(project.proxy_asset_id);
+  const origUrls = {};
+  for (const s of project.sources.filter(x => x.status === 'ready')) origUrls[s.id] = await assetUrl(s.proxy_asset_id);
+  let loaded = null;
   const sync = () => {
     const m = outputToSource(project.timeline, offset + res.currentTime);
-    if (m && Math.abs(orig.currentTime - m.source) > 0.2) orig.currentTime = m.source;
+    if (!m) return;
+    if (loaded !== m.source_id) {
+      loaded = m.source_id;
+      orig.src = origUrls[m.source_id];
+      orig.addEventListener('loadedmetadata', () => { orig.currentTime = m.source; if (!res.paused) orig.play().catch(() => {}); }, { once: true });
+      return;
+    }
+    orig.playbackRate = m.clip.speed || 1;
+    if (Math.abs(orig.currentTime - m.source) > 0.25) orig.currentTime = m.source;
   };
   res.addEventListener('play', () => { sync(); orig.play().catch(() => {}); });
   res.addEventListener('pause', () => orig.pause());
   res.addEventListener('seeked', sync);
   res.addEventListener('timeupdate', sync);
-  clear(container).append(h('div', { class: 'card' }, h('h2', {}, 'Comparación'),
+  sync();
+  clear(container).append(h('div', { class: 'card' }, h('h2', {}, 'Comparación con el original'),
     h('div', { class: 'compare' }, h('figure', {}, h('figcaption', {}, 'Original (sin audio)'), orig), h('figure', {}, h('figcaption', {}, 'Resultado'), res)),
     h('small', { class: 'muted' }, 'Controle la reproducción desde el vídeo de la derecha; el original le sigue.')));
 }

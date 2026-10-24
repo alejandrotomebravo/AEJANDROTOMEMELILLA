@@ -1,6 +1,6 @@
 // Componentes reutilizables: progreso de trabajos, reproductor y pasos del asistente.
 import { api, assetUrl, waitJob } from './api.js';
-import { h, clear, fmtDuration, toast } from './ui.js';
+import { h, clear, fmtDuration, toast, checkbox, field, notice } from './ui.js';
 
 const STATUS = {
   queued: 'En cola', running: 'Procesando', succeeded: 'Completado', failed: 'Error', cancelled: 'Cancelado',
@@ -85,8 +85,8 @@ export async function img(assetId, alt = '') {
 }
 
 export const STEPS = [
-  ['importar', 'Vídeo'], ['rostros', 'Rostros'], ['dialogos', 'Diálogos'], ['labios', 'Labios'],
-  ['editor', 'Editor'], ['vista', 'Vista previa'], ['exportar', 'Exportar'],
+  ['internet', 'Internet'], ['archivos', 'Archivos'], ['escenas', 'Escenas'], ['rostros', 'Rostros'],
+  ['dialogos', 'Diálogos'], ['labios', 'Labios'], ['editor', 'Editor'], ['vista', 'Vista previa'], ['exportar', 'Exportar'],
 ];
 
 export function stepper(pid, current) {
@@ -95,4 +95,55 @@ export function stepper(pid, current) {
       href: `#/proyecto/${pid}/${key}`, class: key === current ? 'active' : '',
       'aria-current': key === current ? 'step' : null,
     }, h('span', { class: 'n' }, i + 1), h('span', { class: 't' }, label))));
+}
+
+// Etiqueta de licencia con sus condiciones concretas.
+export function licenseBox(lic) {
+  if (!lic) return null;
+  const yes = (v, si, no) => (v === true ? si : v === false ? no : null);
+  const pills = [
+    yes(lic.allows_modification, ['Permite modificar', 'ok'], ['NO permite modificar', 'err']),
+    yes(lic.allows_commercial, ['Uso comercial', 'ok'], ['Sólo no comercial', 'warn']),
+    yes(lic.requires_attribution, ['Exige atribución', 'warn'], ['Sin atribución obligatoria', 'ok']),
+    yes(lic.share_alike, ['Compartir igual', 'warn'], null),
+  ].filter(Boolean);
+  return h('div', { class: 'license' },
+    h('div', { class: 'row', style: { marginTop: 0 } }, h('strong', {}, `Licencia: ${lic.name || 'desconocida'}`),
+      lic.url ? h('a', { href: lic.url, target: '_blank', rel: 'noopener noreferrer' }, 'ver condiciones') : null),
+    h('div', { class: 'row', style: { marginTop: '6px' } }, pills.map(([t, c]) => h('span', { class: `pill ${c}` }, t))),
+    lic.notes?.length ? h('ul', { class: 'muted small-list' }, lic.notes.map(n => h('li', {}, n))) : null);
+}
+
+// Formulario de procedencia y derechos (archivos locales e Internet).
+// Distingue: acceder/descargar ≠ modificar ≠ difundir ≠ imagen de quienes aparecen.
+export function provenanceForm(caps, { origin = null, compact = false } = {}) {
+  const data = { source_type: origin ? (origin.license?.code && origin.license.code !== 'unknown' ? 'dominio_publico_cc' : '') : '', attested: false,
+    can_modify: false, can_distribute: false, third_party_people: false, third_party_people_consent: false };
+  const types = h('div', { class: 'list' }, Object.entries(caps.policy.source_types).map(([k, label]) => h('label', { class: 'check list-item' },
+    h('input', { type: 'radio', name: `st-${Math.random()}`, value: k, checked: data.source_type === k, onchange: () => { data.source_type = k; extra.hidden = k === 'propio'; } }), h('span', {}, label))));
+  const holder = h('input', { type: 'text', maxlength: 200, placeholder: 'Persona u organización titular', value: origin?.author || '' });
+  const url = h('input', { type: 'url', placeholder: 'https://… enlace a la licencia o autorización', value: origin?.license?.url || '' });
+  const desc = h('input', { type: 'text', maxlength: 500, placeholder: 'Ej.: grabado por mi primo, que me ha dado permiso' });
+  const extra = h('div', { hidden: !origin && true }, field('Titular de los derechos', holder), field('Enlace a la licencia o autorización', url));
+  const checks = [
+    checkbox('Tengo permiso para MODIFICAR este vídeo (poder verlo o descargarlo no lo implica).', false, v => { data.can_modify = v; }).el,
+    checkbox('Tengo permiso para DIFUNDIR el resultado según la finalidad del proyecto.', false, v => { data.can_distribute = v; }).el,
+  ];
+  const peopleOk = checkbox('Cuento con la autorización de esas personas para alterar su imagen o su voz.', false, v => { data.third_party_people_consent = v; });
+  peopleOk.el.hidden = true;
+  const people = checkbox('En el vídeo aparecen personas identificables distintas de las que autorizo en este proyecto.', false, v => { data.third_party_people = v; peopleOk.el.hidden = !v; });
+  const attest = checkbox('Declaro que la información es veraz y que dispongo de los derechos o autorizaciones necesarios.', false, v => { data.attested = v; });
+  const el = h('div', { class: 'provenance' },
+    origin && origin.license?.code && origin.license.code !== 'unknown'
+      ? notice('info', 'La licencia indicada por la fuente se ha rellenado automáticamente. Una licencia abierta no autoriza cualquier uso: revise sus condiciones.')
+      : (origin ? notice('warn', 'La fuente no indica licencia: necesita una autorización del titular o acreditar que el material es suyo.') : null),
+    h('div', { class: 'field' }, h('span', { class: 'label' }, '¿Con qué derecho usa este vídeo?'), types), extra,
+    compact ? null : field('Descripción (opcional)', desc), ...checks, people.el, peopleOk.el, attest.el);
+  return { el, value: () => ({ ...data, rights_holder: holder.value, license_url: url.value, description: desc.value }) };
+}
+
+export function sourceSelect(sources, value, onchange) {
+  const ready = sources.filter(s => s.status === 'ready');
+  return h('select', { onchange: (e) => onchange?.(e.target.value) },
+    ready.map(s => h('option', { value: s.id, selected: s.id === value }, `${s.label} · ${fmtDuration(s.duration)}${s.kind === 'internet' ? ' · ' + (s.origin.platform || 'Internet') : ''}`)));
 }

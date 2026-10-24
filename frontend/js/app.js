@@ -6,7 +6,10 @@ import { stepper } from './components.js';
 import * as login from './screens/login.js';
 import * as home from './screens/home.js';
 import * as nuevo from './screens/nuevo.js';
-import * as importar from './screens/importar.js';
+import * as internet from './screens/internet.js';
+import * as archivos from './screens/archivos.js';
+import * as escenas from './screens/escenas.js';
+import * as proyectos from './screens/proyectos.js';
 import * as rostros from './screens/rostros.js';
 import * as dialogos from './screens/dialogos.js';
 import * as labios from './screens/labios.js';
@@ -17,7 +20,7 @@ import * as ajustes from './screens/ajustes.js';
 import * as identidades from './screens/identidades.js';
 import * as consentimiento from './screens/consentimiento.js';
 
-const PROJECT_STEPS = { importar, rostros, dialogos, labios, editor, vista, exportar };
+const PROJECT_STEPS = { internet, archivos, escenas, rostros, dialogos, labios, editor, vista, exportar };
 const main = document.getElementById('app');
 let cleanup = null;
 
@@ -31,7 +34,8 @@ function nav(active) {
   clear(n);
   if (!auth.token) return;
   n.append(
-    h('a', { href: '#/', class: active === 'home' ? 'active' : '' }, 'Proyectos'),
+    h('a', { href: '#/', class: active === 'home' ? 'active' : '' }, 'Inicio'),
+    h('a', { href: '#/proyectos', class: active === 'projects' ? 'active' : '' }, 'Proyectos'),
     h('a', { href: '#/identidades', class: active === 'ids' ? 'active' : '' }, 'Personas'),
     h('a', { href: '#/ajustes', class: active === 'settings' ? 'active' : '' }, 'Ajustes'));
 }
@@ -51,11 +55,12 @@ async function route() {
     if (root === 'entrar') { location.hash = '#/'; return; }
     if (!root) { nav('home'); return void (cleanup = await home.render(main)); }
     if (root === 'nuevo') { nav('home'); return void (cleanup = await nuevo.render(main)); }
+    if (root === 'proyectos') { nav('projects'); return void (cleanup = await proyectos.render(main)); }
     if (root === 'ajustes') { nav('settings'); return void (cleanup = await ajustes.render(main)); }
     if (root === 'identidades') { nav('ids'); return void (cleanup = await identidades.render(main)); }
     if (root === 'proyecto' && id) {
       nav('home');
-      const key = PROJECT_STEPS[step] ? step : 'importar';
+      const key = PROJECT_STEPS[step] ? step : 'internet';
       const project = await api(`/api/projects/${id}`);
       const head = h('div', { class: 'project-head' },
         h('div', {}, h('a', { href: '#/', class: 'back' }, '‹ Proyectos'), h('h1', {}, project.name),

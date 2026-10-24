@@ -57,7 +57,7 @@ main { max-width: 1180px; margin: 0 auto; padding: 16px; outline: none; }
 .field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; }
 .field .label { font-weight: 600; font-size: .92rem; }
 .help { color: var(--muted); }
-input[type=text], input[type=email], input[type=password], input[type=number], input[type=url], select, textarea {
+input[type=text], input[type=email], input[type=password], input[type=number], input[type=url], input[type=search], select, textarea {
   font: inherit; font-size: 16px; color: var(--text); background: var(--panel-2); border: 1px solid var(--line);
   border-radius: 10px; padding: 11px 12px; width: 100%; }
 textarea { min-height: 120px; resize: vertical; line-height: 1.5; }
@@ -194,3 +194,23 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
   #nav { width: 100%; margin-left: 0; }
   #nav a { flex: 1; text-align: center; }
 }
+
+/* v0.2: Internet, escenas, licencias */
+.hero h1 { margin-top: 0; }
+.url-row { display: flex; gap: 8px; }
+.url-row input { flex: 1; min-width: 0; }
+@media (max-width: 600px) { .url-row { flex-direction: column; } }
+.result { text-align: left; display: flex; flex-direction: column; gap: 6px; cursor: pointer; color: var(--text); font: inherit; }
+.result img, .thumb-ph { width: 100%; aspect-ratio: 16/9; object-fit: cover; border-radius: 10px; background: var(--panel-2);
+  display: grid; place-items: center; font-size: 2rem; }
+.embed { width: 100%; aspect-ratio: 16/9; border: 0; border-radius: 12px; background: #000; display: block; margin-bottom: 6px; object-fit: contain; }
+.license { border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; margin: 10px 0; background: var(--panel-2); }
+.small-list { margin: 8px 0 0; padding-left: 18px; font-size: .85rem; }
+.sprite-strip { display: flex; gap: 4px; overflow-x: auto; padding-bottom: 6px; -webkit-overflow-scrolling: touch; }
+.sprite-strip .frame { flex: none; border: 1px solid var(--line); border-radius: 6px; padding: 0; background-repeat: no-repeat;
+  cursor: pointer; position: relative; }
+.sprite-strip .frame span { position: absolute; bottom: 2px; left: 2px; font-size: .65rem; background: #000a; color: #fff; padding: 0 4px; border-radius: 4px; }
+.sprite-wrap { overflow: hidden; border-radius: 8px; max-height: 120px; margin: 8px 0; }
+.sprite-thumb { width: 100%; display: block; }
+details summary { cursor: pointer; }
+.list-item.check { flex-wrap: nowrap; margin: 0; }

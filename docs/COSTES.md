@@ -38,6 +38,12 @@
 La aplicación muestra el coste estimado **antes** de cada trabajo remoto, exige confirmación y registra el
 consumo en **Ajustes → Consumo**.
 
+## 3b. Importación desde Internet
+
+Wikimedia Commons, Internet Archive y enlaces directos: sin coste de API (sólo transferencia y disco). Pexels: API
+gratuita con límites de uso. YouTube Data API: gratuita con cuota diaria (cada búsqueda consume 100 unidades de la cuota
+estándar; compruebe su cuota en Google Cloud). Vimeo: requiere un plan del propietario que permita descargas.
+
 ## 4. Ejemplo completo
 
 Vídeo vertical de 60 s, un personaje visible 40 s, dos diálogos que suman 20 s, export 1080p H.264:

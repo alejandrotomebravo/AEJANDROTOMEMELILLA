@@ -11,10 +11,15 @@
 - La **detección de diálogos** del vídeo original es por energía de audio: no distingue voz de música.
 - Las **expresiones** (Paso 5) se conservan según lo que haga el modelo; la app no ofrece control directo de expresiones faciales.
 - La **reproducción del editor** en el navegador es aproximada; la exacta es la vista previa renderizada.
-- El editor trabaja con **un vídeo principal** por proyecto (escenas = tramos de ese vídeo); no se pueden mezclar varios vídeos todavía.
 - **Sin clonación de voz** (decisión deliberada en esta fase).
 - Subidas en una sola petición: un corte de red obliga a reintentar la subida completa (falta subida reanudable).
-- Importación desde **almacenamiento en la nube**: en iPhone funciona a través del selector de Archivos (iCloud Drive, Google Drive, Dropbox si están instalados); no hay integración directa por API.
+- Importación desde **almacenamiento en la nube**: en iPhone funciona a través del selector de Archivos (iCloud Drive, Google Drive, Dropbox si están instalados); no hay integración directa por OAuth.
+- **Conectores de Internet** probados con respuestas simuladas según la documentación oficial y descargas locales, no contra los servicios reales (sin acceso desde el entorno de desarrollo).
+- **YouTube** no es importable (condiciones de servicio). **Vimeo** sólo si el token tiene permiso de descarga. **Vimeo** no ofrece búsqueda en esta versión.
+- La licencia de Internet Archive no siempre consta; la de Commons puede ser múltiple (la API la marca como poco fiable en ese caso).
+- Las **transiciones** son fundidos de entrada/salida por escena (a negro y en audio); no hay fundidos cruzados entre escenas.
+- La **velocidad** de escena se aplica a imagen y audio (con `atempo`, sin cambio de tono); la reproducción en el navegador es aproximada.
+- La **intensidad** de la sustitución facial mezcla el rostro generado con el original: valores bajos pueden producir un efecto de «doble imagen» en movimientos rápidos.
 
 ### Seguridad y cumplimiento
 - La **autodeclaración** («soy yo») no es una verificación biométrica ni documental de identidad.
@@ -35,8 +40,9 @@
 
 | Fase | Mejora |
 |---|---|
-| 3 | Varios vídeos por proyecto, transiciones, estilos de subtítulos, más proveedores de voz (Azure, Google) con selector de idioma, edición de expresiones si el modelo lo permite |
+| 3 | Fundidos cruzados entre escenas, estilos de subtítulos, más proveedores de voz (Azure, Google) con selector de idioma, edición de expresiones si el modelo lo permite |
 | 3 | Métrica de sincronía (SyncNet/LSE) y comparación A/B de resultados |
+| 3 | OAuth con Google Drive/Dropbox/OneDrive; búsqueda en Vimeo; más repositorios abiertos (p. ej., NASA, Europeana) |
 | 4 | PostgreSQL + Redis, almacenamiento S3 con URL prefirmadas, subidas reanudables (tus) |
 | 4 | Cuotas y presupuestos por usuario, 2FA, limitación de intentos, CSP con nonces |
 | 4 | Detección de desnudos (NSFW) y de rostros de menores en el vídeo como control reforzado |

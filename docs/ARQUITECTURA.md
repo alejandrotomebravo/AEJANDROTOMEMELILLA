@@ -80,11 +80,26 @@ segmentos reales de la síntesis, o se escriben a mano.
 `digitalSourceType = compositeWithTrainedAlgorithmicMedia`. Sin certificado propio usa un certificado de pruebas.
 Siempre se añaden etiquetas MP4 y un JSON de procedencia (no firmado).
 
+## 3.6 Fuentes de vídeo de Internet (v0.2)
+
+Arquitectura de conectores (`backend/app/sources/`): cada fuente implementa `Connector` (`search`, `resolve`,
+`download_headers`) y devuelve `VideoCandidate` con metadatos, licencia interpretada y si es importable. Toda red sale por
+`app/net.py` (anti‑SSRF). El editor sólo conoce «fuentes» del proyecto, así que añadir una plataforma no toca el editor.
+Detalle de cada fuente, condiciones y guía para añadir otras: [CONECTORES.md](CONECTORES.md). Seguridad: [SEGURIDAD.md](SEGURIDAD.md).
+
+## 3.7 Varias fuentes por proyecto
+
+Cada proyecto tiene N **fuentes** (`sources`): archivo local o Internet, con su procedencia, licencia, fragmento,
+versión de trabajo, historial de procesamientos (reversible), análisis y miniaturas. La línea de tiempo combina escenas
+de cualquier fuente; diálogos, silencios y subtítulos de diálogo se anclan a `(fuente, tiempo)` y siguen a la imagen
+aunque se reordene, recorte o cambie la velocidad de la escena.
+
 ## 4. Flujo de datos de un proyecto
 
 1. **Proyecto + declaración de uso** (finalidad + 6 compromisos obligatorios, registrados en `audit`).
-2. **Procedencia del vídeo** (propio / licencia / autorizado / CC). Rechaza «descargado de Internet» sin licencia y CC‑ND; avisa de NC/SA.
-3. **Importación** → validación con `ffprobe` (no por extensión) → *proxy* H.264 CFR (aplica rotación de iPhone) → **análisis**: rostros + seguimiento, actividad de audio, cortes de escena.
+2. **Fuentes**: Internet (URL o búsqueda → conector → descarga segura) o archivos (por lotes). Para cada una, declaración de derechos que separa acceder, modificar, difundir e imagen de terceros; se bloquea CC‑ND y YouTube.
+3. **Importación** → validación con `ffprobe` y lista blanca de contenedores → fragmento elegido → *proxy* H.264 CFR (rotación de iPhone) → **análisis**: rostros + seguimiento, actividad de audio, cortes de escena, mosaico de fotogramas.
+3b. **Escenas**: recorte por tiempo, varias escenas por vídeo, orden, conservar/eliminar audio.
 4. **Identidades**: autodeclaración (yo) o **enlace de consentimiento** personal y caducable para terceros (texto versionado con hash, IP/agente seudonimizados, revocable). Menores bloqueados por defecto.
 5. **Face swap** por fragmentos de `CHUNK_SECONDS` con puntos de control → nueva versión del vídeo de trabajo (historial reversible) → copia de revisión 480p **con marca**.
 6. **Diálogo** A/B/C → audio WAV + segmentos + subtítulos.

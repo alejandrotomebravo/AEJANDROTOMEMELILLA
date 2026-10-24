@@ -7,6 +7,8 @@
 | Python | 3.11 – 3.13 | Probado con 3.13 |
 | FFmpeg / FFprobe | ≥ 5 con `libx264`, `libass`, `libfreetype` | `libx265` opcional (H.265) |
 | OpenCV | **4.x** (`opencv-python-headless<5`) | OpenCV 5 eliminó los clasificadores Haar |
+
+> La versión 0.2 cambia el esquema de la base de datos (varias fuentes por proyecto). Las bases de datos de la 0.1 no se migran: haga copia y elimine `DATA_DIR`.
 | Fuente TTF | DejaVu Sans Bold u otra (`FONT_PATH`) | Para la marca de agua |
 | GPU NVIDIA | Opcional | Face swap y modelos de lipsync locales |
 
@@ -39,15 +41,16 @@ editor, vista previa y exportación con marca de agua funcionan. Cada módulo se
    - Local: instale el modelo (Wav2Lip, LatentSync…) y configure `LIPSYNC_PROVIDER=command` + `LIPSYNC_COMMAND` (ver ejemplos en `.env.example`).
 4. **Voces**: `apt install espeak-ng`; Piper (`pip install piper-tts` + voces en `PIPER_VOICES_DIR`); ElevenLabs (`ELEVENLABS_API_KEY`, `ELEVENLABS_VOICE_IDS`).
 5. **Subtítulos automáticos**: `pip install faster-whisper`, `ASR_PROVIDER=faster_whisper`.
-6. **C2PA**: instale `c2patool` (releases de `contentauth/c2pa-rs`) y, en producción, `C2PA_SIGN_CERT`/`C2PA_PRIVATE_KEY`.
+6. **Fuentes de Internet**: Wikimedia Commons, Internet Archive y enlaces directos funcionan sin claves. Pexels (`PEXELS_API_KEY`), Vimeo (`VIMEO_ACCESS_TOKEN`) y la búsqueda de YouTube (`YOUTUBE_API_KEY`) necesitan claves. Ver [CONECTORES.md](CONECTORES.md).
+7. **C2PA**: instale `c2patool` (releases de `contentauth/c2pa-rs`) y, en producción, `C2PA_SIGN_CERT`/`C2PA_PRIVATE_KEY`.
 
 El estado real de cada módulo se ve en **Ajustes → Módulos del servidor**.
 
 ## Pruebas automatizadas
 
 ```bash
-cd backend && python -m pytest -q        # 40 pruebas: unidades, cola y flujo completo con FFmpeg real
-node --test ../frontend/tests.mjs        # lógica del editor (tiempos, deshacer/rehacer)
+cd backend && python -m pytest -q        # 91 pruebas: unidades, cola, extractor (SSRF, conectores) y flujo completo con FFmpeg real
+node --test ../frontend/tests.mjs        # lógica del editor y carga de todos los módulos
 ```
 
 Las pruebas de extremo a extremo usan FFmpeg real. Los modelos que requieren GPU, pesos con licencia o

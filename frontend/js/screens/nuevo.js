@@ -42,7 +42,7 @@ export async function render(root) {
     try {
       const p = await api('/api/projects', { method: 'POST', body: { name: name.value, aspect, resolution: res.value, fps: Number(fps.value), codec: codec.value } });
       await api(`/api/projects/${p.id}/use-declaration`, { method: 'PUT', body: { purpose: purpose.value, detail: detail.value, distribution: distribution.value, confirmations: confirms } });
-      location.hash = `#/proyecto/${p.id}/importar`;
+      location.hash = `#/proyecto/${p.id}/internet`;
     } catch (err) {
       toast(err.message, 'error');
     } finally { submit.disabled = false; }

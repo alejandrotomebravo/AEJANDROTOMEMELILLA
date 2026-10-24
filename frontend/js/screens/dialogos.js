@@ -4,7 +4,8 @@ import { h, field, select, toast, notice, fmtDuration, fmtTime, clear, debounce,
 import { trackJob, audioPlayer } from '../components.js';
 
 export async function render(root, project) {
-  const [voices, identities] = await Promise.all([api('/api/tts/voices'), api('/api/identities')]);
+  const [voices, identities, characters] = await Promise.all([api('/api/tts/voices'), api('/api/identities'),
+    api(`/api/projects/${project.id}/characters`)]);
   const voiceIds = identities.filter(i => ['verified', 'verified_self'].includes(i.consent_status) && i.scopes.includes('voz'));
   let tab = 'texto';
   const tabs = h('div', { class: 'tabs' });
@@ -16,7 +17,7 @@ export async function render(root, project) {
   };
   const drawPanel = () => {
     clear(panel);
-    if (tab === 'texto') ttsPanel(panel, project, voices, refreshList);
+    if (tab === 'texto') ttsPanel(panel, project, voices, characters, refreshList);
     else if (tab === 'micro') micPanel(panel, project, voiceIds, refreshList);
     else filePanel(panel, project, voiceIds, refreshList);
   };
@@ -38,13 +39,21 @@ function rangeInput(label, min, max, step, value, fmt, onchange) {
   return { el: field(label, h('div', { class: 'range-row' }, input, out)), input };
 }
 
-function ttsPanel(panel, project, voices, onDone) {
+const LANGS = { 'es-ES': 'Español (España)', 'es-419': 'Español (Latinoamérica)', 'es-MX': 'Español (México)', en: 'Inglés',
+  'en-US': 'Inglés (EE. UU.)', 'en-GB': 'Inglés (R. U.)', multi: 'Multilingüe' };
+
+function ttsPanel(panel, project, voices, characters, onDone) {
   if (!voices.length) {
     panel.append(notice('warn', 'No hay voces sintéticas configuradas en el servidor (eSpeak NG, Piper o ElevenLabs). Use las modalidades B o C.'));
     return;
   }
   const text = h('textarea', { maxlength: 2000, placeholder: 'Escriba aquí el diálogo. Use [pausa 0.8] para insertar silencios.' });
-  const voice = select(voices.map(v => [v.id, `${v.name}${v.paid ? ' · de pago' : ' · gratuita'}`]), voices[0].id, () => update());
+  const langs = [...new Set(voices.map(v => v.language))];
+  const voice = select([], '', () => update());
+  const fillVoices = (lang) => voice.replaceChildren(...voices.filter(v => !lang || v.language === lang)
+    .map(v => h('option', { value: v.id }, `${v.name}${v.paid ? ' · de pago' : ' · gratuita'}`)));
+  const lang = select([['', 'Todos los idiomas'], ...langs.map(l => [l, LANGS[l] || l])], '', (v) => { fillVoices(v); update(); });
+  fillVoices('');
   const speed = rangeInput('Velocidad', 0.5, 2, 0.05, 1, v => `${v.toFixed(2)}×`, () => update());
   const pitch = rangeInput('Tono', -6, 6, 0.5, 0, v => `${v > 0 ? '+' : ''}${v} st`);
   const gain = rangeInput('Volumen', -20, 12, 1, 0, v => `${v > 0 ? '+' : ''}${v} dB`);
@@ -75,8 +84,9 @@ function ttsPanel(panel, project, voices, onDone) {
   } }, '+ Pausa');
   panel.append(h('h2', {}, 'Texto a voz sintética'),
     field('Diálogo', text), h('div', { class: 'row', style: { marginTop: '-6px' } }, insertPause), estimate,
-    field('Voz autorizada', voice), voiceInfo, speed.el, pitch.el, gain.el,
+    field('Idioma', lang), field('Voz autorizada', voice), voiceInfo, speed.el, pitch.el, gain.el,
     field('Duración objetivo (s)', target, 'Opcional: ajusta el ritmo (±20-25 %) para encajar en la escena.'),
+    fitBox(project, characters, text, speed, target, () => voice.value),
     h('div', { class: 'row end' }, h('button', { class: 'btn primary', onclick: async () => {
       try {
         const r = await api(`/api/projects/${project.id}/dialogues/tts`, { method: 'POST', body: {
@@ -87,6 +97,39 @@ function ttsPanel(panel, project, voices, onDone) {
         if (j.status === 'succeeded') { (j.result.warnings || []).forEach(w => toast(w, 'warn', 8000)); text.value = ''; onDone(); }
       } catch (e) { toast(e.message, 'error'); }
     } }, 'Generar voz')), jobBox);
+}
+
+// Comprueba si el texto cabe en la escena y ofrece alternativas.
+function fitBox(project, characters, text, speed, target, getVoice) {
+  if (!characters.length) return null;
+  const who = select(characters.map(c => [c.id, `${c.label} · ${c.source_label}`]), characters[0].id);
+  const start = h('input', { type: 'number', min: 0, step: 0.1, value: characters[0].presence?.[0]?.start ?? 0 });
+  const out = h('div');
+  const check = async () => {
+    const c = characters.find(x => x.id === who.value);
+    try {
+      const r = await api(`/api/projects/${project.id}/dialogues/fit`, { method: 'POST', body: {
+        text: text.value, speed: Number(speed.input.value), source_id: c.source_id, character_id: c.id, start: Number(start.value) } });
+      clear(out).append(notice(r.fits ? 'ok' : 'warn',
+        `Estimado ${r.estimated.toFixed(1)} s · disponible ${r.available.toFixed(1)} s (límite: ${r.limit_reason}). `,
+        r.fits ? 'El diálogo cabe en la escena.' : 'No cabe. Opciones:'),
+      ...r.suggestions.map(sg => h('div', { class: 'list-item' }, h('span', { class: 'grow' }, sg.text),
+        sg.type === 'acelerar' ? h('button', { class: 'btn small', onclick: () => { speed.input.value = sg.speed; speed.input.dispatchEvent(new Event('input')); check(); } }, 'Aplicar') : null,
+        sg.type === 'ampliar' ? h('button', { class: 'btn small', onclick: () => { target.value = ''; toast(`Al sincronizar, el diálogo ocupará hasta ${sg.end} s.`, 'info'); } }, 'Entendido') : null,
+        sg.type === 'dividir' ? h('button', { class: 'btn small', onclick: async () => {
+          try {
+            for (const t of sg.takes) {
+              await api(`/api/projects/${project.id}/dialogues/tts`, { method: 'POST', body: { text: t, voice_id: getVoice(), speed: Number(speed.input.value) } });
+            }
+            toast(`${sg.takes.length} tomas creadas: aparecerán en la lista al terminar de generarse`, 'ok');
+            setTimeout(() => location.reload(), 1500);
+          } catch (e) { toast(e.message, 'error'); }
+        } }, `Crear ${sg.takes.length} tomas`) : null)));
+    } catch (e) { clear(out).append(notice('error', e.message)); }
+  };
+  return h('details', { class: 'card flat' }, h('summary', {}, h('strong', {}, '¿Cabe en la escena?')),
+    h('div', { class: 'cols even', style: { marginTop: '10px' } }, field('Personaje', who), field('Inicio en su vídeo (s)', start)),
+    h('button', { class: 'btn small', type: 'button', onclick: check }, 'Comprobar'), out);
 }
 
 function ownerFields(voiceIds) {

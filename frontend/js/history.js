@@ -1,4 +1,4 @@
-// Pila de deshacer/rehacer basada en instantáneas de la línea de tiempo.
+// Pila de deshacer/rehacer y proyección de tiempos (idéntica a la del servidor).
 export class History {
   constructor(initial, limit = 100) {
     this.stack = [JSON.stringify(initial)];
@@ -20,29 +20,46 @@ export class History {
   current() { return JSON.parse(this.stack[this.index]); }
 }
 
-// Proyección del tiempo de origen sobre el tiempo de salida (igual que en el servidor).
+export const clipLength = (c) => (c.out - c.in) / (c.speed || 1);
+
 export function outputDuration(tl) {
-  return tl.video.clips.reduce((a, c) => a + (c.out - c.in), 0);
+  return tl.video.clips.reduce((a, c) => a + clipLength(c), 0);
 }
 
-export function sourceToOutput(tl, a, b) {
+// Intervalo [a, b] de la fuente `sid` → lista de intervalos en tiempo de salida.
+export function sourceToOutput(tl, sid, a, b) {
   const res = [];
   let cur = 0;
   for (const c of tl.video.clips) {
-    const lo = Math.max(a, c.in); const hi = Math.min(b, c.out);
-    if (hi > lo) res.push([cur + lo - c.in, cur + hi - c.in]);
-    cur += c.out - c.in;
+    const sp = c.speed || 1;
+    if (c.source_id === sid) {
+      const lo = Math.max(a, c.in); const hi = Math.min(b, c.out);
+      if (hi > lo) res.push([cur + (lo - c.in) / sp, cur + (hi - c.in) / sp]);
+    }
+    cur += clipLength(c);
   }
   return res;
 }
 
+// Tiempo de salida → escena, fuente y tiempo dentro de la fuente.
 export function outputToSource(tl, t) {
   let cur = 0;
-  for (let i = 0; i < tl.video.clips.length; i++) {
-    const c = tl.video.clips[i];
-    const d = c.out - c.in;
-    if (t < cur + d || i === tl.video.clips.length - 1) return { index: i, clip: c, source: c.in + Math.min(d, Math.max(0, t - cur)), offset: cur };
+  const clips = tl.video.clips;
+  for (let i = 0; i < clips.length; i++) {
+    const c = clips[i];
+    const d = clipLength(c);
+    if (t < cur + d || i === clips.length - 1) {
+      const local = Math.min(d, Math.max(0, t - cur));
+      return { index: i, clip: c, source_id: c.source_id, source: c.in + local * (c.speed || 1), offset: cur };
+    }
     cur += d;
   }
   return null;
+}
+
+export function parseTime(v) {
+  // Acepta «75», «1:15», «1:15.5» o «0:01:15».
+  const s = String(v).trim().replace(',', '.');
+  if (!s) return NaN;
+  return s.split(':').reduce((acc, p) => acc * 60 + Number(p), 0);
 }

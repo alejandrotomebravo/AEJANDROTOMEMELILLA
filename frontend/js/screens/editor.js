@@ -5,12 +5,12 @@
 // agua renderizados, se genera en el servidor en el paso «Vista previa».
 import { api, upload, assetUrl, ApiError } from '../api.js';
 import { h, field, toast, notice, fmtTime, clear, debounce, modal } from '../ui.js';
-import { History, outputDuration, sourceToOutput, outputToSource } from '../history.js';
+import { History, outputDuration, sourceToOutput, outputToSource, clipLength } from '../history.js';
 
 const uid = () => Math.random().toString(36).slice(2, 12);
 
 export async function render(root, project) {
-  if (!project.proxy_asset_id) {
+  if (!project.has_video) {
     root.append(notice('warn', 'Importe primero un vídeo.'));
     return;
   }
@@ -23,12 +23,25 @@ export async function render(root, project) {
   let pps = 40; // píxeles por segundo
   let outTime = 0;
   let showOriginal = false;
-  const srcDur = project.source.duration;
+  const sources = Object.fromEntries(project.sources.filter(s => s.status === 'ready').map(s => [s.id, s]));
+  const srcDur = (sid) => sources[sid]?.duration || 0;
+  const srcLabel = (sid) => sources[sid]?.label || 'Fuente';
 
   // ---------------------------------------------------------- reproductor
   const video = h('video', { class: 'player', playsinline: true, preload: 'auto' });
-  const urls = { review: project.review_asset_id ? await assetUrl(project.review_asset_id) : null, original: await assetUrl(project.proxy_asset_id) };
-  video.src = urls.review || urls.original;
+  const urls = {};
+  for (const s of Object.values(sources)) {
+    urls[s.id] = { review: s.review_asset_id ? await assetUrl(s.review_asset_id) : null, original: await assetUrl(s.proxy_asset_id) };
+  }
+  let loadedSource = null;
+  async function useSource(sid) {
+    const want = showOriginal ? urls[sid]?.original : (urls[sid]?.review || urls[sid]?.original);
+    if (!want || (loadedSource === sid && video.dataset.mode === String(showOriginal))) return;
+    loadedSource = sid;
+    video.dataset.mode = String(showOriginal);
+    video.src = want;
+    await new Promise(r => { video.addEventListener('loadedmetadata', r, { once: true }); setTimeout(r, 3000); });
+  }
   const audioEls = new Map(); // asset_id -> HTMLAudioElement
   async function audioFor(assetId) {
     if (!audioEls.has(assetId)) {
@@ -47,17 +60,22 @@ export async function render(root, project) {
   const timeLabel = h('span', { class: 'cost' }, '0:00.0');
   const playBtn = h('button', { class: 'btn primary small', onclick: () => (playing ? pause() : play()) }, '▶ Reproducir');
 
-  function seek(t) {
+  async function seek(t) {
     outTime = Math.max(0, Math.min(outputDuration(tl), t));
     const m = outputToSource(tl, outTime);
-    if (m) video.currentTime = m.source;
+    if (m) {
+      await useSource(m.source_id);
+      video.currentTime = m.source;
+      video.playbackRate = m.clip.speed || 1;
+    }
     syncAudio(true);
     drawPlayhead();
   }
-  function play() {
-    if (outTime >= outputDuration(tl) - 0.05) seek(0);
+  async function play() {
+    if (!tl.video.clips.length) return;
+    if (outTime >= outputDuration(tl) - 0.05) outTime = 0;
     playing = true; playBtn.textContent = '❚❚ Pausa';
-    seek(outTime);
+    await seek(outTime);
     video.play().catch(() => {});
     loop();
   }
@@ -67,19 +85,26 @@ export async function render(root, project) {
     for (const a of audioEls.values()) a.pause();
     cancelAnimationFrame(raf);
   }
+  let switching = false;
   function loop() {
-    raf = requestAnimationFrame(() => {
+    raf = requestAnimationFrame(async () => {
       if (!playing) return;
       const m = outputToSource(tl, outTime);
       if (!m) return pause();
+      if (switching) return loop();
       const src = video.currentTime;
       if (src >= m.clip.out - 0.04) {
         const next = tl.video.clips[m.index + 1];
         if (!next) { pause(); outTime = outputDuration(tl); drawPlayhead(); return; }
-        outTime = m.offset + (m.clip.out - m.clip.in) + 0.001;
+        outTime = m.offset + clipLength(m.clip) + 0.001;
+        switching = true;
+        await useSource(next.source_id);
         video.currentTime = next.in;
+        video.playbackRate = next.speed || 1;
+        video.play().catch(() => {});
+        switching = false;
       } else {
-        outTime = m.offset + Math.max(0, src - m.clip.in);
+        outTime = m.offset + Math.max(0, src - m.clip.in) / (m.clip.speed || 1);
       }
       syncAudio(false);
       drawPlayhead();
@@ -89,11 +114,13 @@ export async function render(root, project) {
   function syncAudio(force) {
     const m = outputToSource(tl, outTime);
     const srcT = m ? m.source : 0;
-    const muted = tl.source_audio.mutes.some(x => srcT >= x.start && srcT < x.end);
+    const sid = m?.source_id;
+    const muted = tl.source_audio.mutes.some(x => x.source_id === sid && srcT >= x.start && srcT < x.end);
     video.muted = muted;
-    video.volume = Math.min(1, tl.source_audio.volume);
+    video.volume = Math.min(1, tl.source_audio.volume * (m?.clip.volume ?? 1));
     const want = new Map();
     for (const it of tl.dialogue.items) {
+      if (it.source_id !== sid) continue;
       const local = srcT - it.source_start;
       const dur = mediaById[it.asset_id]?.duration || 0;
       if (local >= 0 && local < dur) want.set(it.asset_id, { local, vol: it.volume * tl.dialogue.volume });
@@ -112,6 +139,7 @@ export async function render(root, project) {
       const a = audioEls.get(w.asset || k);
       if (!a) continue;
       a.volume = Math.min(1, w.vol);
+      a.playbackRate = w.asset ? 1 : (m?.clip.speed || 1); // los diálogos siguen la velocidad de su escena
       if (force || Math.abs(a.currentTime - w.local) > 0.25) a.currentTime = w.local;
       if (playing && a.paused) a.play().catch(() => {});
       if (!playing) a.pause();
@@ -195,31 +223,33 @@ export async function render(root, project) {
 
     let cur = 0;
     const vclips = tl.video.clips.map((c, i) => {
-      const el = clipEl('video', 'video', c.id, cur * pps, (c.out - c.in) * pps, `Escena ${i + 1} · ${fmtTime(c.in)}–${fmtTime(c.out)}`, {
+      const extra = [c.speed !== 1 ? `${c.speed}×` : '', c.volume === 0 ? '🔇' : ''].filter(Boolean).join(' ');
+      const el = clipEl('video', 'video', c.id, cur * pps, clipLength(c) * pps, `${i + 1}. ${srcLabel(c.source_id)} · ${fmtTime(c.in)}–${fmtTime(c.out)} ${extra}`, {
         handles: true,
         onDrag: (dt, handle) => {
           const cc = tl.video.clips[i];
-          if (handle === 'l') cc.in = round(Math.min(cc.out - 0.2, Math.max(0, cc.in + dt)));
-          else if (handle === 'r') cc.out = round(Math.max(cc.in + 0.2, Math.min(srcDur, cc.out + dt)));
+          const ds = dt * (cc.speed || 1);
+          if (handle === 'l') cc.in = round(Math.min(cc.out - 0.2, Math.max(0, cc.in + ds)));
+          else if (handle === 'r') cc.out = round(Math.max(cc.in + 0.2, Math.min(srcDur(cc.source_id), cc.out + ds)));
         },
       });
-      cur += c.out - c.in;
+      cur += clipLength(c);
       return el;
     });
-    const mutes = tl.source_audio.mutes.flatMap((m, i) => sourceToOutput(tl, m.start, m.end).map(([a, b]) =>
+    const mutes = tl.source_audio.mutes.flatMap((m, i) => sourceToOutput(tl, m.source_id, m.start, m.end).map(([a, b]) =>
       clipEl('mute', 'mute', `mute${i}`, a * pps, (b - a) * pps, 'silenciado')));
     const dlg = tl.dialogue.items.flatMap(it => {
       const dur2 = mediaById[it.asset_id]?.duration || 1;
-      return sourceToOutput(tl, it.source_start, it.source_start + dur2).map(([a, b]) =>
+      return sourceToOutput(tl, it.source_id, it.source_start, it.source_start + dur2).map(([a, b]) =>
         clipEl('dialogue', 'dialogue', it.id, a * pps, (b - a) * pps, `Diálogo · ${Math.round(it.volume * 100)} %`, {
           onDrag: (dt) => {
             const x = tl.dialogue.items.find(y => y.id === it.id);
-            x.source_start = round(Math.max(0, Math.min(srcDur - dur2, x.source_start + dt)));
+            x.source_start = round(Math.max(0, Math.min(srcDur(x.source_id) - dur2, x.source_start + dt)));
           },
         }));
     });
     const subs = tl.subtitles.items.flatMap(s => {
-      const spans = s.base === 'source' ? sourceToOutput(tl, s.start, s.end) : [[s.start, s.end]];
+      const spans = s.base === 'source' ? sourceToOutput(tl, s.source_id, s.start, s.end) : [[s.start, s.end]];
       return spans.map(([a, b]) => clipEl('sub', 'sub', s.id, a * pps, (b - a) * pps, s.text, {
         onDrag: s.base === 'source' ? null : (dt) => {
           const x = tl.subtitles.items.find(y => y.id === s.id);
@@ -279,25 +309,41 @@ export async function render(root, project) {
         h('label', { class: 'check' }, h('input', { type: 'checkbox', checked: t.muted, onchange: (e) => { t.muted = e.target.checked; commit(); } }), `Silenciar ${t.name.toLowerCase()}`))),
       field('Encaje del vídeo en el formato', h('select', { onchange: (e) => { tl.fit = e.target.value; commit(); } },
         [['contain_blur', 'Completo con fondo difuminado'], ['contain', 'Completo con bandas negras'], ['cover', 'Recortar para llenar']].map(([v, l]) => h('option', { value: v, selected: tl.fit === v }, l)))),
-      h('label', { class: 'check' }, h('input', { type: 'checkbox', checked: tl.subtitles.enabled, onchange: (e) => { tl.subtitles.enabled = e.target.checked; commit(); } }), 'Mostrar subtítulos en el vídeo'));
+      h('label', { class: 'check' }, h('input', { type: 'checkbox', checked: tl.subtitles.enabled, onchange: (e) => { tl.subtitles.enabled = e.target.checked; commit(); } }), 'Mostrar subtítulos en el vídeo'),
+      h('label', { class: 'check' }, h('input', { type: 'checkbox', checked: tl.credits?.enabled !== false, onchange: (e) => { tl.credits = { ...(tl.credits || { seconds: 4 }), enabled: e.target.checked }; commit(); } }),
+        project.credits_required ? 'Mostrar créditos de las fuentes al final (alguna licencia exige atribución)' : 'Mostrar créditos de las fuentes al final'));
     if (!s) { inspector.append(h('p', { class: 'muted' }, 'Seleccione un elemento de la línea de tiempo para editarlo.'), general); return; }
     const del = (fn) => h('button', { class: 'btn small danger', onclick: () => { fn(); selected = null; commit(); } }, 'Eliminar');
     if (s.kind === 'video') {
       const i = tl.video.clips.findIndex(c => c.id === s.id);
       const c = tl.video.clips[i];
       if (!c) return;
-      inspector.append(h('h3', {}, `Escena ${i + 1}`),
-        h('div', { class: 'cols even' }, num('Inicio en origen (s)', c.in, v => { c.in = Math.min(v, c.out - 0.2); }), num('Fin en origen (s)', c.out, v => { c.out = Math.min(srcDur, Math.max(v, c.in + 0.2)); })),
+      const slider = (label, min, max, step, value, fmt, set) => {
+        const out = h('output', {}, fmt(value));
+        const i2 = h('input', { type: 'range', min, max, step, value, oninput: () => { out.textContent = fmt(Number(i2.value)); set(Number(i2.value)); }, onchange: () => commit() });
+        return field(label, h('div', { class: 'range-row' }, i2, out));
+      };
+      c.color = c.color || { brightness: 0, contrast: 1, saturation: 1 };
+      inspector.append(h('h3', {}, `Escena ${i + 1} · ${srcLabel(c.source_id)}`),
+        h('div', { class: 'cols even' }, num('Inicio en origen (s)', c.in, v => { c.in = Math.min(v, c.out - 0.2); }), num('Fin en origen (s)', c.out, v => { c.out = Math.min(srcDur(c.source_id), Math.max(v, c.in + 0.2)); })),
+        slider('Velocidad', 0.5, 2, 0.05, c.speed || 1, v => `${v.toFixed(2)}×`, v => { c.speed = v; }),
+        vol('Audio original de la escena', c.volume ?? 1, v => { c.volume = v; }),
+        h('div', { class: 'cols even' }, num('Fundido de entrada (s)', c.fade_in || 0, v => { c.fade_in = Math.min(v, 5); }, 0.1), num('Fundido de salida (s)', c.fade_out || 0, v => { c.fade_out = Math.min(v, 5); }, 0.1)),
+        h('details', {}, h('summary', {}, 'Corrección de color'),
+          slider('Brillo', -0.5, 0.5, 0.01, c.color.brightness, v => v.toFixed(2), v => { c.color.brightness = v; }),
+          slider('Contraste', 0.5, 2, 0.05, c.color.contrast, v => v.toFixed(2), v => { c.color.contrast = v; }),
+          slider('Saturación', 0, 3, 0.05, c.color.saturation, v => v.toFixed(2), v => { c.color.saturation = v; }),
+          h('small', { class: 'muted' }, 'El color, la velocidad y los fundidos se ven en la vista previa renderizada.')),
         h('div', { class: 'row' },
           h('button', { class: 'btn small', disabled: i === 0, onclick: () => { tl.video.clips.splice(i - 1, 0, tl.video.clips.splice(i, 1)[0]); commit(); } }, '← Mover antes'),
           h('button', { class: 'btn small', disabled: i === tl.video.clips.length - 1, onclick: () => { tl.video.clips.splice(i + 1, 0, tl.video.clips.splice(i, 1)[0]); commit(); } }, 'Mover después →'),
           h('button', { class: 'btn small', onclick: () => {
             const m = outputToSource(tl, outTime);
             if (!m || m.clip.id !== c.id || m.source - c.in < 0.2 || c.out - m.source < 0.2) return toast('Coloque el cursor dentro de esta escena para dividirla.', 'warn');
-            tl.video.clips.splice(i + 1, 0, { id: uid(), in: round(m.source), out: c.out });
-            c.out = round(m.source); commit();
+            tl.video.clips.splice(i + 1, 0, { ...structuredClone(c), id: uid(), in: round(m.source), fade_in: 0 });
+            c.out = round(m.source); c.fade_out = 0; commit();
           } }, 'Dividir en el cursor'),
-          h('button', { class: 'btn small', onclick: () => { tl.video.clips.splice(i + 1, 0, { ...c, id: uid() }); commit(); } }, 'Duplicar'),
+          h('button', { class: 'btn small', onclick: () => { tl.video.clips.splice(i + 1, 0, { ...structuredClone(c), id: uid() }); commit(); } }, 'Duplicar'),
           tl.video.clips.length > 1 ? del(() => tl.video.clips.splice(i, 1)) : null));
     } else if (s.kind === 'dialogue') {
       const it = tl.dialogue.items.find(x => x.id === s.id);
@@ -384,15 +430,15 @@ export async function render(root, project) {
     h('button', { class: 'btn small ghost', onclick: () => { pps = Math.max(8, pps / 1.5); draw(false); } }, '−'),
     h('button', { class: 'btn small ghost', onclick: () => { pps = Math.min(240, pps * 1.5); draw(false); } }, '+'),
     h('span', { class: 'spacer' }), saveState, fileIn);
-  const compareBtn = h('button', { class: 'btn small', disabled: !urls.review, onclick: () => {
+  const anyReview = Object.values(urls).some(u => u.review);
+  const compareLabel = h('small', { class: 'muted' }, anyReview ? 'Mostrando: RESULTADO (con marca de agua)' : 'Vídeos sin procesar');
+  const compareBtn = h('button', { class: 'btn small', disabled: !anyReview, onclick: async () => {
     showOriginal = !showOriginal;
-    const t = video.currentTime;
-    video.src = showOriginal ? urls.original : urls.review;
-    video.currentTime = t;
+    loadedSource = null;
+    await seek(outTime);
     compareBtn.textContent = showOriginal ? 'Ver resultado' : 'Ver original';
     compareLabel.textContent = showOriginal ? 'Mostrando: ORIGINAL' : 'Mostrando: RESULTADO (con marca de agua)';
   } }, 'Ver original');
-  const compareLabel = h('small', { class: 'muted' }, urls.review ? 'Mostrando: RESULTADO (con marca de agua)' : 'Vídeo sin procesar');
 
   const onKey = (e) => {
     if (['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement?.tagName)) return;
@@ -409,5 +455,6 @@ export async function render(root, project) {
   h('div', { class: 'card' }, toolbar, tlBox),
   h('div', { class: 'row end' }, h('a', { class: 'btn primary', href: `#/proyecto/${project.id}/vista` }, 'Vista previa →')));
   draw();
+  if (tl.video.clips.length) seek(0);
   return () => { pause(); window.removeEventListener('keydown', onKey); };
 }
