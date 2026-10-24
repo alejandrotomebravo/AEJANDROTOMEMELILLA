@@ -223,7 +223,11 @@ def build_command(*, sources: dict[str, Path], tl: dict[str, Any], aspect: str, 
     if credits and tl.get("credits", {}).get("enabled", True):
         secs = min(total, float(tl.get("credits", {}).get("seconds", 4)))
         tf = workdir / "credits.txt"
-        tf.write_text("Créditos:\n" + "\n".join(credits), encoding="utf-8")
+        # Ajuste de línea según el ancho: ~0,55 × tamaño de letra por carácter (DejaVu Sans Bold).
+        max_chars = max(20, int(w * 0.9 / (min(w, h) * 0.026 * 0.6)))
+        wrapped = [line[i:i + max_chars] for c in credits for line in subtitles.wrap(c, max_chars)
+                   for i in range(0, len(line), max_chars)]  # también parte URL o palabras muy largas
+        tf.write_text("Créditos:\n" + "\n".join(wrapped), encoding="utf-8")
         vchain.append("drawtext=" + ":".join([
             watermark.font_option(), f"textfile={watermark.filter_escape(str(tf))}", "expansion=none",
             "fontsize=(min(w\\,h)*0.026)", "fontcolor=white", "box=1", "boxcolor=black@0.6", "boxborderw=10",

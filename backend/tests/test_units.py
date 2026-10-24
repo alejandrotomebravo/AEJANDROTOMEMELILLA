@@ -236,3 +236,15 @@ def test_average_identity_with_real_insightface_face():
     out = average_identity(faces)
     assert np.allclose(out.normed_embedding, expected / np.linalg.norm(expected))
     assert out is faces[1]  # la foto con el rostro más grande
+
+
+def test_long_credits_are_wrapped(env, tmp_path):
+    from pathlib import Path
+    from app.media import render
+    tl = timeline.validate(_tl([("A", 0, 1, {})]), {"A": 5}, set())
+    credit = "«Vídeo» de Autora con un nombre muy largo (plataforma), CC BY 4.0. https://ejemplo.org/" + "x" * 80
+    render.build_command(sources={"A": Path("a.mp4")}, tl=tl, aspect="9:16", opts=render.RenderOptions("720p", 30, "h264"),
+                         asset_paths={}, wm_cfg={}, workdir=tmp_path, output=tmp_path / "o.mp4", credits=[credit],
+                         source_durations={"A": 5})
+    lines = (tmp_path / "credits.txt").read_text().splitlines()
+    assert len(lines) > 2 and max(len(l) for l in lines) <= 60
