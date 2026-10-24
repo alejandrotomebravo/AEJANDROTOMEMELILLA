@@ -86,7 +86,7 @@ class Settings:
     inswapper_model_path: str = ""
     insightface_license_ack: bool = False
     faceswap_device: str = "cpu"  # cpu | cuda
-    faceswap_seconds_per_second_cpu: float = 12.0
+    faceswap_seconds_per_second_cpu: float = 30.0
     faceswap_seconds_per_second_gpu: float = 1.5
 
     # Sincronización labial
@@ -209,7 +209,7 @@ def load_settings() -> Settings:
         inswapper_model_path=_str("INSWAPPER_MODEL_PATH"),
         insightface_license_ack=_bool("INSIGHTFACE_LICENSE_ACK", False),
         faceswap_device=_str("FACESWAP_DEVICE", "cpu"),
-        faceswap_seconds_per_second_cpu=_float("FACESWAP_SECONDS_PER_SECOND_CPU", 12.0),
+        faceswap_seconds_per_second_cpu=_float("FACESWAP_SECONDS_PER_SECOND_CPU", 30.0),
         faceswap_seconds_per_second_gpu=_float("FACESWAP_SECONDS_PER_SECOND_GPU", 1.5),
         lipsync_provider=_str("LIPSYNC_PROVIDER", "none"),
         sync_api_key=_str("SYNC_API_KEY"),

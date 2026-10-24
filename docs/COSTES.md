@@ -15,7 +15,7 @@
 | Etapa | Factor de tiempo (configurable) | Tiempo por minuto de vídeo |
 |---|---|---|
 | Importación + análisis (CPU) | ≈ 0,2‑0,5× | 15‑30 s |
-| Face swap InsightFace · CPU | `FACESWAP_SECONDS_PER_SECOND_CPU` ≈ 12× | ≈ 12 min |
+| Face swap InsightFace · CPU | `FACESWAP_SECONDS_PER_SECOND_CPU` ≈ 30× (medido en prueba real, 432p) | ≈ 25-30 min |
 | Face swap InsightFace · GPU (clase T4/L4) | ≈ 1‑2× | 1‑2 min |
 | Lipsync local (Wav2Lip/LatentSync) · GPU | 5‑20× según modelo | 5‑20 min |
 | Render 1080p H.264 · CPU 4 núcleos | ≈ 1,6× | ≈ 1,5‑2 min |
