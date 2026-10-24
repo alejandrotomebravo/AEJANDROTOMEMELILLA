@@ -31,12 +31,19 @@
 Requiere un ordenador con tarjeta gráfica **NVIDIA** (recomendado ≥ 12 GB de memoria de vídeo; ≥ 24 GB para vídeo
 a velocidad razonable). Todo seguiría siendo gratuito por uso y local. Candidatos a evaluar con el equipo real:
 
-| Paso | Candidato abierto | Licencia (a verificar antes de usar) |
-|---|---|---|
-| Guion creativo | Modelo de lenguaje local servido con Ollama (p. ej. familia Qwen) | Ollama MIT; cada modelo tiene su licencia |
-| Retratos con la cara | SDXL + método de identidad facial (InstantID / PuLID / IP‑Adapter FaceID) | SDXL: OpenRAIL++. ⚠ Varios métodos de identidad dependen de modelos de InsightFace **de uso no comercial** |
-| Fotogramas | SDXL con los retratos como referencia | Igual que arriba |
-| Clips | Wan 2.2 imagen→vídeo vía ComfyUI | Wan 2.2: Apache 2.0 |
+**Uso previsto: propio y particular (no comercial).** Eso permite usar también modelos con licencia «sólo uso no
+comercial», que suelen ser los de mejor calidad:
+
+| Paso | Candidato abierto | Licencia | ¿Válido para uso particular? |
+|---|---|---|---|
+| Guion creativo | Modelo de lenguaje local con Ollama (p. ej. familia Qwen) | Ollama MIT; Qwen, en general Apache 2.0 (revisar cada modelo) | Sí |
+| Retratos con la cara | SDXL + InstantID / PuLID / IP‑Adapter FaceID | SDXL: OpenRAIL++; los métodos de identidad usan modelos de InsightFace **de uso no comercial** | Sí (no comercial) |
+| Retratos de mayor calidad | FLUX.1 [dev] + PuLID‑FLUX | FLUX.1 [dev]: licencia **no comercial** de Black Forest Labs | Sí (no comercial) |
+| Fotogramas | SDXL o FLUX con los retratos como referencia | Igual que arriba | Sí (no comercial) |
+| Clips | Wan 2.2 imagen→vídeo vía ComfyUI | Apache 2.0 | Sí |
+
+⚠ Si algún día la app se usara con fines comerciales (vender vídeos, encargos, publicidad), habría que sustituir
+los componentes marcados «no comercial» o adquirir sus licencias.
 
 Los módulos `gen/llm.py`, `gen/images.py` y `gen/video.py` ya están separados para enchufar estos modelos.
 

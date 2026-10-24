@@ -1,6 +1,6 @@
 # Estudio IA de vídeo
 
-Aplicación web instalable (PWA), **gratuita y sin servicios de pago**, para crear vídeos a partir de
+Aplicación web instalable (PWA) **de uso propio y particular, gratuita y sin servicios de pago**, para crear vídeos a partir de
 instrucciones escritas, con personajes que llevan **la cara o la caricatura** de personas que lo han autorizado
 (usted mismo o terceros con consentimiento revocable) o personajes inventados, en el **estilo visual** que elija:
 realista, caricatura, cómic, anime, animación 3D, acuarela, boceto, pixel art o plastilina.

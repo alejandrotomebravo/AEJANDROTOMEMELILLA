@@ -3,7 +3,23 @@
 > Resumen técnico de las medidas implementadas y del marco aplicable en España/UE a 24/10/2026.
 > **No es asesoramiento jurídico.** Antes de ofrecer el servicio a terceros, revíselo con un profesional.
 
-## 1. Marco normativo relevante
+## 0. Uso propio y particular (caso de esta instalación)
+
+La aplicación se usa **para fines propios y particulares, sin actividad profesional ni comercial**. Efectos:
+
+| Norma | ¿Se aplica en uso particular? | Matiz importante |
+|---|---|---|
+| Reglamento de IA (UE) 2024/1689 — obligaciones del responsable del despliegue, incl. art. 50.4 (avisar de las ultrafalsificaciones) | **No**: el art. 2.10 excluye a las personas físicas que usan sistemas de IA en una actividad puramente personal y no profesional | La marca de agua se mantiene igualmente: es una buena práctica y protege si un vídeo se reenvía |
+| RGPD / LOPDGDD | **No**, por la «excepción doméstica» (art. 2.2.c RGPD) | Deja de aplicarse si el vídeo se publica en Internet de forma accesible a un número indeterminado de personas (TJUE, asunto C‑101/01, *Lindqvist*) |
+| LO 1/1982 (derecho a la propia imagen) | **Sí, siempre** | Usar o difundir la cara o la voz de otra persona sin su consentimiento puede ser una intromisión ilegítima aunque el uso sea particular: el sistema de consentimiento de la app sigue siendo necesario para terceros |
+| Código Penal (p. ej. art. 197, intimidad; 173, trato degradante; 401, usurpación de estado civil) | **Sí, siempre** | Los usos prohibidos de la app siguen prohibidos |
+| Licencias de los modelos | Permite modelos «sólo uso no comercial» | Ver LIMITACIONES, hoja de ruta |
+
+En resumen: para **sus propios vídeos con su cara** el uso particular es muy sencillo; con la **cara de otras
+personas** sigue necesitando su consentimiento, y **publicar** los vídeos en abierto activa de nuevo el RGPD.
+No es asesoramiento jurídico.
+
+## 1. Marco normativo relevante (si se ofreciera a terceros)
 
 | Norma | Relevancia | Medida en la app |
 |---|---|---|
