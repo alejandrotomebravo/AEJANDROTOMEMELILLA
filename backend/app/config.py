@@ -80,27 +80,7 @@ class Settings:
     face_detector: str = "auto"  # auto | yunet | haar
     yunet_model_path: str = ""
 
-    # Sustitución facial
-    faceswap_provider: str = "none"  # none | insightface
-    insightface_model_root: str = ""
-    inswapper_model_path: str = ""
-    insightface_license_ack: bool = False
-    faceswap_device: str = "cpu"  # cpu | cuda
-    faceswap_seconds_per_second_cpu: float = 30.0
-    faceswap_seconds_per_second_gpu: float = 1.5
 
-    # Sincronización labial
-    lipsync_provider: str = "none"  # none | sync_so | command
-    sync_api_key: str = ""
-    sync_api_base: str = "https://api.sync.so/v2"
-    sync_model: str = "lipsync-2"
-    sync_cost_per_second: float = 0.05
-    sync_seconds_per_second: float = 3.0
-    sync_poll_seconds: float = 5.0
-    sync_timeout_seconds: int = 1800
-    lipsync_command: str = ""
-    lipsync_command_license: str = ""
-    lipsync_command_seconds_per_second: float = 20.0
 
     # Síntesis de voz
     espeak_binary: str = ""
@@ -136,16 +116,28 @@ class Settings:
     media_cpu_seconds: int = 3600
     media_max_file_mb: int = 8192
 
+    # Generación (v0.3)
+    llm_provider: str = "auto"  # auto | anthropic | basic
+    anthropic_model: str = "claude-opus-5-5"
+    image_provider: str = "auto"  # auto | fal | local
+    video_provider: str = "auto"  # auto | fal | local
+    fal_key: str = ""
+    fal_queue_base: str = "https://queue.fal.run"
+    fal_image_edit_model: str = "fal-ai/nano-banana/edit"
+    fal_image_model: str = "fal-ai/nano-banana"
+    fal_video_model: str = "fal-ai/kling-video/v2.1/standard/image-to-video"
+    fal_image_cost: float = 0.04
+    fal_video_cost_per_second: float = 0.05
+    fal_poll_seconds: float = 4.0
+    fal_timeout_seconds: int = 1200
+    max_scenes: int = 12
+
     # Importación desde Internet
     http_user_agent: str = "EstudioIA/0.2 (+https://example.invalid/contacto)"
     outbound_proxy: str = ""
     allow_private_networks: bool = False  # SOLO pruebas: permite descargar de IPs privadas
     download_timeout_seconds: int = 60
     max_redirects: int = 5
-    youtube_api_key: str = ""
-    vimeo_access_token: str = ""
-    pexels_api_key: str = ""
-    enabled_connectors: str = "wikimedia,internet_archive,pexels,vimeo,youtube,direct_url"
 
     @property
     def storage_dir(self) -> Path:
@@ -204,24 +196,6 @@ def load_settings() -> Settings:
         chunk_seconds=_float("CHUNK_SECONDS", 10.0),
         face_detector=_str("FACE_DETECTOR", "auto"),
         yunet_model_path=_str("YUNET_MODEL_PATH"),
-        faceswap_provider=_str("FACESWAP_PROVIDER", "none"),
-        insightface_model_root=_str("INSIGHTFACE_MODEL_ROOT"),
-        inswapper_model_path=_str("INSWAPPER_MODEL_PATH"),
-        insightface_license_ack=_bool("INSIGHTFACE_LICENSE_ACK", False),
-        faceswap_device=_str("FACESWAP_DEVICE", "cpu"),
-        faceswap_seconds_per_second_cpu=_float("FACESWAP_SECONDS_PER_SECOND_CPU", 30.0),
-        faceswap_seconds_per_second_gpu=_float("FACESWAP_SECONDS_PER_SECOND_GPU", 1.5),
-        lipsync_provider=_str("LIPSYNC_PROVIDER", "none"),
-        sync_api_key=_str("SYNC_API_KEY"),
-        sync_api_base=_str("SYNC_API_BASE", "https://api.sync.so/v2").rstrip("/"),
-        sync_model=_str("SYNC_MODEL", "lipsync-2"),
-        sync_cost_per_second=_float("SYNC_COST_PER_SECOND", 0.05),
-        sync_seconds_per_second=_float("SYNC_SECONDS_PER_SECOND", 3.0),
-        sync_poll_seconds=_float("SYNC_POLL_SECONDS", 5.0),
-        sync_timeout_seconds=_int("SYNC_TIMEOUT_SECONDS", 1800),
-        lipsync_command=_str("LIPSYNC_COMMAND"),
-        lipsync_command_license=_str("LIPSYNC_COMMAND_LICENSE"),
-        lipsync_command_seconds_per_second=_float("LIPSYNC_COMMAND_SECONDS_PER_SECOND", 20.0),
         espeak_binary=_str("ESPEAK_BINARY") or (shutil.which("espeak-ng") or shutil.which("espeak") or ""),
         piper_command=_str("PIPER_COMMAND") or (shutil.which("piper") or ""),
         piper_voices_dir=_str("PIPER_VOICES_DIR"),
@@ -248,10 +222,20 @@ def load_settings() -> Settings:
         allow_private_networks=_bool("ALLOW_PRIVATE_NETWORKS", False),
         download_timeout_seconds=_int("DOWNLOAD_TIMEOUT_SECONDS", 60),
         max_redirects=_int("MAX_REDIRECTS", 5),
-        youtube_api_key=_str("YOUTUBE_API_KEY"),
-        vimeo_access_token=_str("VIMEO_ACCESS_TOKEN"),
-        pexels_api_key=_str("PEXELS_API_KEY"),
-        enabled_connectors=_str("ENABLED_CONNECTORS", "wikimedia,internet_archive,pexels,vimeo,youtube,direct_url"),
+        llm_provider=_str("LLM_PROVIDER", "auto"),
+        anthropic_model=_str("ANTHROPIC_MODEL", "claude-opus-5-5"),
+        image_provider=_str("IMAGE_PROVIDER", "auto"),
+        video_provider=_str("VIDEO_PROVIDER", "auto"),
+        fal_key=_str("FAL_KEY"),
+        fal_queue_base=_str("FAL_QUEUE_BASE", "https://queue.fal.run").rstrip("/"),
+        fal_image_edit_model=_str("FAL_IMAGE_EDIT_MODEL", "fal-ai/nano-banana/edit"),
+        fal_image_model=_str("FAL_IMAGE_MODEL", "fal-ai/nano-banana"),
+        fal_video_model=_str("FAL_VIDEO_MODEL", "fal-ai/kling-video/v2.1/standard/image-to-video"),
+        fal_image_cost=_float("FAL_IMAGE_COST", 0.04),
+        fal_video_cost_per_second=_float("FAL_VIDEO_COST_PER_SECOND", 0.05),
+        fal_poll_seconds=_float("FAL_POLL_SECONDS", 4.0),
+        fal_timeout_seconds=_int("FAL_TIMEOUT_SECONDS", 1200),
+        max_scenes=_int("MAX_SCENES", 12),
     )
     if s.env == "production" and s.allow_private_networks:
         raise RuntimeError("ALLOW_PRIVATE_NETWORKS no puede activarse en producción (riesgo de SSRF).")

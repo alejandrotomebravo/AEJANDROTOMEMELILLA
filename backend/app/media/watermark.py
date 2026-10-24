@@ -14,10 +14,10 @@ from typing import Any
 from ..config import settings
 from ..errors import PolicyError
 
-BASE_TEXT = "VÍDEO EDITADO CON INTELIGENCIA ARTIFICIAL"
-ALLOWED_LABELS = ["PARODIA", "FICCIÓN", "DOBLAJE SINTÉTICO", "ROSTROS ALTERADOS CON IA"]
-# Etiquetas que se añaden obligatoriamente según el procesamiento realizado.
-FACES_LABEL = "ROSTROS ALTERADOS CON IA"
+BASE_TEXT = "VÍDEO GENERADO CON INTELIGENCIA ARTIFICIAL"
+ALLOWED_LABELS = ["PARODIA", "FICCIÓN", "CARICATURA", "VOCES SINTÉTICAS", "PERSONAJES BASADOS EN PERSONAS REALES"]
+# Etiqueta que se añade obligatoriamente si algún personaje se basa en una persona real.
+FACES_LABEL = "PERSONAJES BASADOS EN PERSONAS REALES"
 POSITIONS = ["top-left", "top-center", "top-right", "bottom-left", "bottom-center", "bottom-right"]
 
 MIN_SIZE, MAX_SIZE, DEFAULT_SIZE = 0.022, 0.06, 0.03
@@ -141,7 +141,7 @@ def drawtext_filters(cfg: dict[str, Any], workdir: Path, prefix: str = "wm") -> 
 
 DISCLAIMER = (
     "La marca de agua identifica el vídeo como contenido editado o generado con inteligencia "
-    "artificial. NO sustituye a las autorizaciones necesarias de derechos de autor, derechos de "
-    "imagen o derechos sobre la voz de las personas que aparecen, ni a la licencia del material "
-    "audiovisual de terceros. Usted sigue siendo responsable de disponer de ellas."
+    "artificial. NO sustituye a las autorizaciones necesarias de derechos de imagen o sobre la voz de las "
+    "personas en las que se basan los personajes, ni a los derechos de autor de músicas u otros materiales "
+    "que añada. Usted sigue siendo responsable de disponer de ellas."
 )

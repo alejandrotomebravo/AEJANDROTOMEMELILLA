@@ -35,6 +35,8 @@ CREATE TABLE IF NOT EXISTS projects (
     aspect TEXT NOT NULL,
     settings TEXT NOT NULL DEFAULT '{}',
     use_declaration TEXT,
+    brief TEXT NOT NULL DEFAULT '',
+    storyboard TEXT NOT NULL DEFAULT '{}',
     timeline TEXT NOT NULL DEFAULT '{}',
     timeline_version INTEGER NOT NULL DEFAULT 0,
     created_at REAL NOT NULL,
@@ -81,15 +83,19 @@ CREATE TABLE IF NOT EXISTS assets (
     created_at REAL NOT NULL,
     expires_at REAL
 );
-CREATE TABLE IF NOT EXISTS characters (
+CREATE TABLE IF NOT EXISTS cast_members (
     id TEXT PRIMARY KEY,
     project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-    source_id TEXT NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
-    label TEXT NOT NULL,
-    track TEXT NOT NULL,
-    stats TEXT NOT NULL DEFAULT '{}',
-    thumb_asset_id TEXT,
     identity_id TEXT REFERENCES identities(id) ON DELETE SET NULL,
+    name TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    style TEXT NOT NULL,
+    voice_id TEXT,
+    portrait_asset_id TEXT,
+    portrait_preview_asset_id TEXT,
+    status TEXT NOT NULL DEFAULT 'pending',
+    meta TEXT NOT NULL DEFAULT '{}',
+    error TEXT,
     created_at REAL NOT NULL
 );
 CREATE TABLE IF NOT EXISTS identities (
@@ -180,7 +186,7 @@ CREATE TABLE IF NOT EXISTS usage (
 );
 """
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 _local = threading.local()
 _init_lock = threading.Lock()
@@ -219,7 +225,7 @@ def conn() -> sqlite3.Connection:
             version = c.execute("PRAGMA user_version").fetchone()[0]
             has_tables = c.execute("SELECT count(*) FROM sqlite_master WHERE name='projects'").fetchone()[0]
             if has_tables and version < SCHEMA_VERSION:
-                raise RuntimeError("La base de datos es de una versión anterior (0.1) sin migración automática. "
+                raise RuntimeError("La base de datos es de una versión anterior sin migración automática. "
                                    "Haga una copia y elimine DATA_DIR para crearla de nuevo.")
             c.executescript(SCHEMA)
             c.execute(f"PRAGMA user_version={SCHEMA_VERSION}")

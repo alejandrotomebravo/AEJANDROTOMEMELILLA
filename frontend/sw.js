@@ -1,11 +1,11 @@
 // Service worker: guarda la interfaz para que la PWA abra sin conexión.
 // Nunca almacena respuestas de la API ni archivos multimedia de los usuarios.
-const CACHE = 'estudio-ia-v2';
+const CACHE = 'estudio-ia-v3';
 const SHELL = [
   '/', '/manifest.webmanifest', '/static/css/app.css', '/static/js/app.js', '/static/js/api.js', '/static/js/ui.js',
   '/static/js/components.js', '/static/js/history.js', '/static/icons/icon.svg', '/static/icons/icon-192.png',
-  ...['login', 'home', 'nuevo', 'internet', 'archivos', 'escenas', 'rostros', 'dialogos', 'labios', 'editor', 'vista',
-    'exportar', 'ajustes', 'identidades', 'consentimiento', 'proyectos'].map(s => `/static/js/screens/${s}.js`),
+  ...['login', 'home', 'nuevo', 'personajes', 'guion', 'escenas', 'editor', 'vista', 'exportar', 'ajustes',
+    'identidades', 'consentimiento', 'proyectos'].map(s => `/static/js/screens/${s}.js`),
 ];
 
 self.addEventListener('install', (e) => {

@@ -1,4 +1,4 @@
-// Paso 8: marca de agua, opciones de salida, estimación y exportación.
+// Paso 6: marca de agua, opciones de salida, estimación y exportación.
 import { api, capabilities, assetUrl } from '../api.js';
 import { h, field, select, toast, notice, clear, checkbox, fmtDuration, fmtBytes, fmtDate, modal } from '../ui.js';
 import { trackJob } from '../components.js';
@@ -7,7 +7,7 @@ const POS = { 'top-left': 'Arriba izquierda', 'top-center': 'Arriba centro', 'to
   'bottom-left': 'Abajo izquierda', 'bottom-center': 'Abajo centro', 'bottom-right': 'Abajo derecha' };
 
 export async function render(root, project) {
-  if (!project.has_video) { root.append(notice('warn', 'Importe primero un vídeo.')); return; }
+  if (!project.has_video) { root.append(notice('warn', 'Genere primero el clip de alguna escena.')); return; }
   const caps = await capabilities();
   const wmc = caps.watermark;
   const wm = { ...project.watermark };
@@ -33,9 +33,9 @@ export async function render(root, project) {
   const pos = select(Object.entries(POS), wm.position, v => { wm.position = v; saveWm(); });
   const size = h('input', { type: 'range', min: wmc.size[0], max: wmc.size[1], step: 0.002, value: wm.size, oninput: () => { wm.size = Number(size.value); drawMock(); }, onchange: saveWm });
   const opacity = h('input', { type: 'range', min: wmc.opacity[0], max: wmc.opacity[1], step: 0.05, value: wm.opacity, oninput: () => { wm.opacity = Number(opacity.value); drawMock(); }, onchange: saveWm });
-  const forced = project.faces_altered ? ['ROSTROS ALTERADOS CON IA'] : [];
+  const forced = project.real_people ? ['PERSONAJES BASADOS EN PERSONAS REALES'] : [];
   const labels = wmc.labels.map(l => {
-    const c = checkbox(forced.includes(l) ? `${l} (obligatoria: el vídeo tiene rostros sustituidos)` : l, wm.labels.includes(l),
+    const c = checkbox(forced.includes(l) ? `${l} (obligatoria: hay personajes basados en personas reales)` : l, wm.labels.includes(l),
       v => { wm.labels = v ? [...wm.labels, l] : wm.labels.filter(x => x !== l); saveWm(); });
     if (forced.includes(l)) { c.input.checked = true; c.input.disabled = true; }
     return c.el;
@@ -48,7 +48,7 @@ export async function render(root, project) {
   const fps = select(caps.export.fps.map(f => [f, `${f} fps`]), exp.fps);
   const codec = select([['h264', 'MP4 · H.264'], ...(caps.export.h265 ? [['h265', 'MP4 · H.265/HEVC']] : [])], exp.codec);
   const estBox = h('div', { class: 'notice info' }, 'Calculando…');
-  const srcFps = Math.max(30, ...project.sources.map(s => s.fps || 0));
+  const srcFps = Math.max(24, ...project.clips.map(s => s.fps || 0));
   const estimate = async () => {
     try {
       const e = await api(`/api/projects/${project.id}/estimate`, { method: 'POST', body: { resolution: res.value, fps: Number(fps.value), codec: codec.value } });
@@ -57,7 +57,7 @@ export async function render(root, project) {
         h('dt', {}, 'Duración'), h('dd', {}, fmtDuration(e.duration_seconds)),
         h('dt', {}, 'Tamaño aprox.'), h('dd', {}, `${e.estimated_size_mb} MB`),
         h('dt', {}, 'Tiempo aprox.'), h('dd', {}, `${fmtDuration(e.estimated_render_seconds)} (local, sin coste)`)),
-      Number(fps.value) > srcFps + 1 ? h('div', {}, h('small', {}, `⚠ El original tiene ${Math.round(srcFps)} fps: a ${fps.value} fps se duplicarán fotogramas, no se ganará fluidez.`)) : '',
+      Number(fps.value) > srcFps + 1 ? h('div', {}, h('small', {}, `⚠ Los clips generados tienen ${Math.round(srcFps)} fps: a ${fps.value} fps se duplicarán fotogramas, no se ganará fluidez.`)) : '',
       h('small', { class: 'muted' }, e.note),
       e.rights_warnings?.length ? notice('warn', h('strong', {}, 'Derechos: '), h('ul', {}, e.rights_warnings.map(w => h('li', {}, w)))) : '',
       e.credits?.length ? h('div', {}, h('strong', {}, 'Créditos que se incluirán:'), h('ul', {}, e.credits.map(c => h('li', {}, c)))) : '');

@@ -1,4 +1,4 @@
-// Paso 6: editor multipista con deshacer/rehacer y guardado automático.
+// Paso 4: editor multipista con deshacer/rehacer y guardado automático.
 //
 // La reproducción en el navegador es una aproximación (salta entre escenas y
 // sincroniza los audios). La vista previa exacta, con subtítulos y marca de
@@ -11,7 +11,7 @@ const uid = () => Math.random().toString(36).slice(2, 12);
 
 export async function render(root, project) {
   if (!project.has_video) {
-    root.append(notice('warn', 'Importe primero un vídeo.'));
+    root.append(notice('warn', 'Genere primero el clip de alguna escena en «Escenas».'));
     return;
   }
   const media = await api(`/api/projects/${project.id}/media`);
@@ -22,23 +22,22 @@ export async function render(root, project) {
   let selected = null; // {kind, id}
   let pps = 40; // píxeles por segundo
   let outTime = 0;
-  let showOriginal = false;
-  const sources = Object.fromEntries(project.sources.filter(s => s.status === 'ready').map(s => [s.id, s]));
+  // Sólo se sirven las copias de revisión con marca de agua de los clips generados.
+  const sources = Object.fromEntries(project.clips.map(s => [s.id, s]));
   const srcDur = (sid) => sources[sid]?.duration || 0;
-  const srcLabel = (sid) => sources[sid]?.label || 'Fuente';
+  const srcLabel = (sid) => sources[sid]?.label || 'Escena';
 
   // ---------------------------------------------------------- reproductor
   const video = h('video', { class: 'player', playsinline: true, preload: 'auto' });
   const urls = {};
   for (const s of Object.values(sources)) {
-    urls[s.id] = { review: s.review_asset_id ? await assetUrl(s.review_asset_id) : null, original: await assetUrl(s.proxy_asset_id) };
+    if (s.review_asset_id) urls[s.id] = await assetUrl(s.review_asset_id);
   }
   let loadedSource = null;
   async function useSource(sid) {
-    const want = showOriginal ? urls[sid]?.original : (urls[sid]?.review || urls[sid]?.original);
-    if (!want || (loadedSource === sid && video.dataset.mode === String(showOriginal))) return;
+    const want = urls[sid];
+    if (!want || loadedSource === sid) return;
     loadedSource = sid;
-    video.dataset.mode = String(showOriginal);
     video.src = want;
     await new Promise(r => { video.addEventListener('loadedmetadata', r, { once: true }); setTimeout(r, 3000); });
   }
@@ -158,7 +157,7 @@ export async function render(root, project) {
     } catch (e) {
       saveState.textContent = 'Sin guardar';
       if (e instanceof ApiError && e.status === 409) {
-        const ok = await modal({ title: 'Cambios en otro lugar', body: h('p', {}, 'El proyecto se modificó desde otra ventana o por un procesamiento (por ejemplo, una sincronización labial). ¿Cargar la versión más reciente? Se perderán los cambios locales no guardados.'),
+        const ok = await modal({ title: 'Cambios en otro lugar', body: h('p', {}, 'El proyecto se modificó desde otra ventana o por un procesamiento (por ejemplo, al generar un clip o una voz). ¿Cargar la versión más reciente? Se perderán los cambios locales no guardados.'),
           actions: [{ label: 'Mantener aquí', value: false }, { label: 'Cargar', value: true, kind: 'primary' }] });
         if (ok) location.reload();
       } else toast(e.message, 'error');
@@ -279,7 +278,7 @@ export async function render(root, project) {
             else x.start = round(Math.max(0, x.start + dt));
           },
         }))));
-    clear(inner).append(ruler, track('Vídeo', vclips), track('Audio original', mutes), track('Diálogos', dlg), ...audioTracks,
+    clear(inner).append(ruler, track('Vídeo', vclips), track('Audio del clip', mutes), track('Diálogos', dlg), ...audioTracks,
       track('Subtítulos', subs), track('Gráficos', gfx), playhead);
     drawPlayhead();
     timeLabel.textContent = `${fmtTime(outTime)} / ${fmtTime(outputDuration(tl))}`;
@@ -303,7 +302,7 @@ export async function render(root, project) {
     clear(inspector);
     const s = selected;
     const general = h('div', {}, h('h3', {}, 'Mezcla general'),
-      vol('Audio original', tl.source_audio.volume, v => { tl.source_audio.volume = v; }),
+      vol('Audio de los clips', tl.source_audio.volume, v => { tl.source_audio.volume = v; }),
       vol('Diálogos', tl.dialogue.volume, v => { tl.dialogue.volume = v; }),
       ...tl.tracks.map(t => h('div', {}, vol(t.name, t.volume, v => { t.volume = v; }),
         h('label', { class: 'check' }, h('input', { type: 'checkbox', checked: t.muted, onchange: (e) => { t.muted = e.target.checked; commit(); } }), `Silenciar ${t.name.toLowerCase()}`))),
@@ -327,7 +326,7 @@ export async function render(root, project) {
       inspector.append(h('h3', {}, `Escena ${i + 1} · ${srcLabel(c.source_id)}`),
         h('div', { class: 'cols even' }, num('Inicio en origen (s)', c.in, v => { c.in = Math.min(v, c.out - 0.2); }), num('Fin en origen (s)', c.out, v => { c.out = Math.min(srcDur(c.source_id), Math.max(v, c.in + 0.2)); })),
         slider('Velocidad', 0.5, 2, 0.05, c.speed || 1, v => `${v.toFixed(2)}×`, v => { c.speed = v; }),
-        vol('Audio original de la escena', c.volume ?? 1, v => { c.volume = v; }),
+        vol('Audio del clip', c.volume ?? 1, v => { c.volume = v; }),
         h('div', { class: 'cols even' }, num('Fundido de entrada (s)', c.fade_in || 0, v => { c.fade_in = Math.min(v, 5); }, 0.1), num('Fundido de salida (s)', c.fade_out || 0, v => { c.fade_out = Math.min(v, 5); }, 0.1)),
         h('details', {}, h('summary', {}, 'Corrección de color'),
           slider('Brillo', -0.5, 0.5, 0.01, c.color.brightness, v => v.toFixed(2), v => { c.color.brightness = v; }),
@@ -348,9 +347,9 @@ export async function render(root, project) {
     } else if (s.kind === 'dialogue') {
       const it = tl.dialogue.items.find(x => x.id === s.id);
       if (!it) return;
-      inspector.append(h('h3', {}, 'Diálogo sincronizado'),
-        notice('info', 'El diálogo está ligado a la imagen: si mueve su inicio, los labios sincronizados no lo acompañarán. Para cambiar el momento, repita la sincronización.'),
-        num('Inicio en el vídeo de origen (s)', it.source_start, v => { it.source_start = v; }), vol('Volumen', it.volume, v => { it.volume = v; }),
+      inspector.append(h('h3', {}, 'Voz de la escena'),
+        notice('info', 'La voz está anclada a su escena: si reordena las escenas, la acompaña. Para cambiar el texto, edítelo en «Guion» y vuelva a crear las voces en «Escenas».'),
+        num('Inicio dentro de la escena (s)', it.source_start, v => { it.source_start = v; }), vol('Volumen', it.volume, v => { it.volume = v; }),
         del(() => { tl.dialogue.items = tl.dialogue.items.filter(x => x.id !== it.id); }));
     } else if (s.kind === 'track') {
       const t = tl.tracks.find(tt => tt.clips.some(c => c.id === s.id));
@@ -382,7 +381,7 @@ export async function render(root, project) {
       const i = Number(s.id.replace('mute', ''));
       const m = tl.source_audio.mutes[i];
       if (!m) return;
-      inspector.append(h('h3', {}, 'Silencio del audio original'),
+      inspector.append(h('h3', {}, 'Silencio del audio del clip'),
         h('div', { class: 'cols even' }, num('Inicio en origen (s)', m.start, v => { m.start = v; }), num('Fin (s)', m.end, v => { m.end = Math.max(v, m.start + 0.1); })),
         del(() => tl.source_audio.mutes.splice(i, 1)));
     }
@@ -430,15 +429,6 @@ export async function render(root, project) {
     h('button', { class: 'btn small ghost', onclick: () => { pps = Math.max(8, pps / 1.5); draw(false); } }, '−'),
     h('button', { class: 'btn small ghost', onclick: () => { pps = Math.min(240, pps * 1.5); draw(false); } }, '+'),
     h('span', { class: 'spacer' }), saveState, fileIn);
-  const anyReview = Object.values(urls).some(u => u.review);
-  const compareLabel = h('small', { class: 'muted' }, anyReview ? 'Mostrando: RESULTADO (con marca de agua)' : 'Vídeos sin procesar');
-  const compareBtn = h('button', { class: 'btn small', disabled: !anyReview, onclick: async () => {
-    showOriginal = !showOriginal;
-    loadedSource = null;
-    await seek(outTime);
-    compareBtn.textContent = showOriginal ? 'Ver resultado' : 'Ver original';
-    compareLabel.textContent = showOriginal ? 'Mostrando: ORIGINAL' : 'Mostrando: RESULTADO (con marca de agua)';
-  } }, 'Ver original');
 
   const onKey = (e) => {
     if (['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement?.tagName)) return;
@@ -449,7 +439,7 @@ export async function render(root, project) {
   tlBox.addEventListener('pointerdown', () => { selected = null; draw(); });
 
   root.append(h('div', { class: 'cols' },
-    h('div', { class: 'card' }, video, h('div', { class: 'row' }, compareBtn, compareLabel),
+    h('div', { class: 'card' }, video,
       h('small', { class: 'muted' }, 'Reproducción aproximada en el navegador. La vista previa exacta (subtítulos, gráficos y marca de agua) se genera en el paso siguiente.')),
     inspector),
   h('div', { class: 'card' }, toolbar, tlBox),

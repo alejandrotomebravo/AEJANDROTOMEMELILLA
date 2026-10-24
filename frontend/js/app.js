@@ -1,18 +1,15 @@
 // Enrutador de la aplicación (hash) y arranque.
-import { api, auth, setUnauthorizedHandler } from './api.js';
+import { api, auth, setUnauthorizedHandler, capabilities } from './api.js';
 import { h, clear, toast } from './ui.js';
 import { stepper } from './components.js';
 
 import * as login from './screens/login.js';
 import * as home from './screens/home.js';
 import * as nuevo from './screens/nuevo.js';
-import * as internet from './screens/internet.js';
-import * as archivos from './screens/archivos.js';
+import * as personajes from './screens/personajes.js';
+import * as guion from './screens/guion.js';
 import * as escenas from './screens/escenas.js';
 import * as proyectos from './screens/proyectos.js';
-import * as rostros from './screens/rostros.js';
-import * as dialogos from './screens/dialogos.js';
-import * as labios from './screens/labios.js';
 import * as editor from './screens/editor.js';
 import * as vista from './screens/vista.js';
 import * as exportar from './screens/exportar.js';
@@ -20,7 +17,7 @@ import * as ajustes from './screens/ajustes.js';
 import * as identidades from './screens/identidades.js';
 import * as consentimiento from './screens/consentimiento.js';
 
-const PROJECT_STEPS = { internet, archivos, escenas, rostros, dialogos, labios, editor, vista, exportar };
+const PROJECT_STEPS = { personajes, guion, escenas, editor, vista, exportar };
 const main = document.getElementById('app');
 let cleanup = null;
 
@@ -60,11 +57,11 @@ async function route() {
     if (root === 'identidades') { nav('ids'); return void (cleanup = await identidades.render(main)); }
     if (root === 'proyecto' && id) {
       nav('home');
-      const key = PROJECT_STEPS[step] ? step : 'internet';
-      const project = await api(`/api/projects/${id}`);
+      const key = PROJECT_STEPS[step] ? step : 'personajes';
+      const [project, caps] = await Promise.all([api(`/api/projects/${id}`), capabilities()]);
       const head = h('div', { class: 'project-head' },
         h('div', {}, h('a', { href: '#/', class: 'back' }, '‹ Proyectos'), h('h1', {}, project.name),
-          h('span', { class: 'pill' }, project.aspect)),
+          h('span', { class: 'pill' }, project.aspect), h('span', { class: 'pill' }, caps.styles.find(s => s.key === project.style)?.label || project.style)),
         stepper(id, key));
       const body = h('section', { class: 'step-body' });
       main.append(head, body);

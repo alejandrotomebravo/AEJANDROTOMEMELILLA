@@ -10,18 +10,19 @@ from .. import db, policy, services, storage
 from ..config import settings
 from ..errors import AppError, Conflict, NotFound
 from ..jobs import queue
+from ..gen import styles
 from ..media import ffmpeg, timeline, watermark
 from .deps import current_user
 
 router = APIRouter(prefix="/api/projects", tags=["proyectos"])
 
 ASPECTS = {"9:16", "16:9", "1:1"}
-VIDEO_EXT = {".mp4", ".mov", ".m4v", ".webm", ".mkv", ".avi", ".3gp"}
 
 
 class NewProject(BaseModel):
     name: str
     aspect: str = "9:16"
+    style: str = "caricatura"
     resolution: str = "1080p"
     fps: int = 30
     codec: str = "h264"
@@ -30,6 +31,8 @@ class NewProject(BaseModel):
 class ProjectPatch(BaseModel):
     name: str | None = None
     aspect: str | None = None
+    style: str | None = None
+    brief: str | None = None
     export: dict[str, Any] | None = None
     watermark: dict[str, Any] | None = None
     pronunciations: dict[str, str] | None = None
@@ -41,27 +44,40 @@ class TimelineIn(BaseModel):
 
 
 def _summary(p: dict[str, Any]) -> dict[str, Any]:
-    thumb = db.one("SELECT thumb_asset_id FROM characters WHERE project_id=? LIMIT 1", (p["id"],))
+    thumb = db.one("SELECT portrait_preview_asset_id AS t FROM cast_members WHERE project_id=? AND portrait_preview_asset_id "
+                   "IS NOT NULL LIMIT 1", (p["id"],))
     stats = db.one("SELECT COUNT(*) AS n, COALESCE(SUM(size),0) AS bytes FROM assets WHERE project_id=?", (p["id"],))
     n_src = db.one("SELECT COUNT(*) AS n FROM sources WHERE project_id=? AND status='ready'", (p["id"],))["n"]
     n_exp = db.one("SELECT COUNT(*) AS n FROM assets WHERE project_id=? AND kind='render'", (p["id"],))["n"]
+    n_cast = db.one("SELECT COUNT(*) AS n FROM cast_members WHERE project_id=?", (p["id"],))["n"]
     return {"id": p["id"], "name": p["name"], "aspect": p["aspect"], "updated_at": p["updated_at"],
-            "created_at": p["created_at"], "has_video": n_src > 0, "sources": n_src, "exports": n_exp,
+            "created_at": p["created_at"], "has_video": n_src > 0, "clips": n_src, "exports": n_exp, "cast": n_cast,
             "storage_bytes": stats["bytes"], "files": stats["n"],
             "expires_at": (p["updated_at"] + settings.retention_days * 86400) if settings.retention_days else None,
-            "thumb_asset_id": thumb["thumb_asset_id"] if thumb else None}
+            "thumb_asset_id": thumb["t"] if thumb else None}
+
+
+def cast_out(c: dict[str, Any]) -> dict[str, Any]:
+    return {k: c[k] for k in ("id", "identity_id", "name", "description", "style", "voice_id", "status", "error",
+                              "portrait_preview_asset_id", "created_at")} | {"provider": (c.get("meta") or {}).get("provider")}
 
 
 def _full(p: dict[str, Any]) -> dict[str, Any]:
-    from .sources import source_out
-    sources = [source_out(s) for s in services.list_sources(p["id"])]
+    clips = db.all_("SELECT id, label, duration, width, height, fps, review_asset_id, origin FROM sources "
+                    "WHERE project_id=? AND status='ready'", (p["id"],))
+    for c in clips:
+        o = db.jload(c.pop("origin"), {})
+        c.update({"scene_id": o.get("scene_id"), "provider": o.get("provider")})
+    sb = p["storyboard"] or {}
     return {
         "id": p["id"], "name": p["name"], "aspect": p["aspect"], "settings": p["settings"],
-        "use_declaration": p["use_declaration"],
+        "style": services.project_style(p), "brief": p["brief"], "use_declaration": p["use_declaration"],
+        "storyboard": {"title": sb.get("title", ""), "logline": sb.get("logline", ""), "provider": sb.get("provider"),
+                       "model": sb.get("model"), "scenes": sb.get("scenes", [])},
+        "cast": [cast_out(c) for c in services.list_cast(p["id"])],
+        "clips": clips, "has_video": bool(clips),
         "timeline": p["timeline"], "timeline_version": p["timeline_version"],
-        "sources": sources, "has_video": any(s["status"] == "ready" for s in sources),
-        "watermark": services.watermark_cfg(p), "faces_altered": services.faces_altered(p["id"]),
-        "credits": services.credits(p), "credits_required": services.credits_required(p),
+        "watermark": services.watermark_cfg(p), "real_people": services.real_people_in_project(p["id"]),
         "created_at": p["created_at"], "updated_at": p["updated_at"],
     }
 
@@ -74,13 +90,13 @@ def list_projects(user=Depends(current_user)) -> list[dict[str, Any]]:
 
 @router.post("/{pid}/duplicate")
 def duplicate_project(pid: str, user=Depends(current_user)) -> dict[str, Any]:
-    """Duplica la configuración y la declaración de uso (no copia vídeos ni procesamientos)."""
+    """Duplica la configuración, las instrucciones y la declaración de uso (no copia personajes ni vídeos)."""
     p = services.load_project(pid, user["id"])
     nid = db.new_id()
-    db.execute("""INSERT INTO projects(id,user_id,name,aspect,settings,use_declaration,timeline,created_at,updated_at)
-                  VALUES (?,?,?,?,?,?,?,?,?)""",
+    db.execute("""INSERT INTO projects(id,user_id,name,aspect,settings,use_declaration,brief,timeline,created_at,updated_at)
+                  VALUES (?,?,?,?,?,?,?,?,?,?)""",
                (nid, user["id"], f"{p['name']} (copia)"[:120], p["aspect"], db.jdump(p["settings"]),
-                db.jdump(p["use_declaration"]) if p["use_declaration"] else None, db.jdump(timeline.empty()),
+                db.jdump(p["use_declaration"]) if p["use_declaration"] else None, p["brief"], db.jdump(timeline.empty()),
                 db.now(), db.now()))
     return _full(services.load_project(nid, user["id"]))
 
@@ -92,8 +108,9 @@ def create_project(body: NewProject, user=Depends(current_user)) -> dict[str, An
         raise AppError("El proyecto necesita un nombre.")
     if body.aspect not in ASPECTS:
         raise AppError("Formato no válido. Elija 9:16, 16:9 o 1:1.")
+    styles.get(body.style)
     pid = db.new_id()
-    settings_ = {"export": {"resolution": body.resolution, "fps": body.fps, "codec": body.codec},
+    settings_ = {"style": body.style, "export": {"resolution": body.resolution, "fps": body.fps, "codec": body.codec},
                  "watermark": dict(watermark.DEFAULT_WATERMARK), "pronunciations": {}}
     db.execute("""INSERT INTO projects(id,user_id,name,aspect,settings,timeline,created_at,updated_at)
                   VALUES (?,?,?,?,?,?,?,?)""",
@@ -120,6 +137,14 @@ def patch_project(pid: str, body: ProjectPatch, user=Depends(current_user)) -> d
         if body.aspect not in ASPECTS:
             raise AppError("Formato no válido.")
         fields["aspect"] = body.aspect
+    if body.style is not None:
+        styles.get(body.style)
+        s["style"] = body.style
+    if body.brief is not None:
+        brief = body.brief.strip()[:6000]
+        if brief:
+            policy.check_instructions(brief)
+        fields["brief"] = brief
     if body.export is not None:
         s["export"] = {k: body.export[k] for k in ("resolution", "fps", "codec") if k in body.export}
     if body.watermark is not None:

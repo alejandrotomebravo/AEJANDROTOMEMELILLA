@@ -15,7 +15,7 @@ from . import db
 from .config import settings
 from .errors import AppError
 from .jobs import queue, tasks  # noqa: F401  (registra los manejadores)
-from .api import auth, dialogues, files, identities, processing, projects, sources, system
+from .api import auth, dialogues, files, identities, processing, projects, studio, system
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 FRONTEND = Path(__file__).resolve().parents[2] / "frontend"
@@ -37,7 +37,7 @@ async def lifespan(app: FastAPI):
 
 
 def create_app() -> FastAPI:
-    app = FastAPI(title="Estudio IA de vídeo", version="0.2.0", lifespan=lifespan,
+    app = FastAPI(title="Estudio IA de vídeo", version="0.3.0", lifespan=lifespan,
                   docs_url="/api/docs", openapi_url="/api/openapi.json")
     if settings.cors_origins:
         app.add_middleware(CORSMiddleware, allow_origins=settings.cors_origins, allow_credentials=False,
@@ -53,10 +53,8 @@ def create_app() -> FastAPI:
         if not request.url.path.startswith("/api/docs"):
             response.headers.setdefault(
                 "Content-Security-Policy",
-                "default-src 'self'; img-src 'self' blob: data: https:; "
-                "media-src 'self' blob: https://upload.wikimedia.org https://archive.org https://*.archive.org "
-                "https://videos.pexels.com https://player.vimeo.com; "
-                "frame-src https://www.youtube-nocookie.com https://player.vimeo.com https://archive.org; "
+                "default-src 'self'; img-src 'self' blob: data:; "
+                "media-src 'self' blob:; "
                 "style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'")
         return response
 
@@ -71,7 +69,7 @@ def create_app() -> FastAPI:
                                                       "message": "Algunos datos enviados no son válidos.",
                                                       "details": {"errors": exc.errors()[:5]}},)
 
-    for r in (auth.router, projects.router, sources.router, identities.router, identities.public, dialogues.router,
+    for r in (auth.router, projects.router, studio.router, identities.router, identities.public, dialogues.router,
               processing.router, files.router, system.router):
         app.include_router(r)
 

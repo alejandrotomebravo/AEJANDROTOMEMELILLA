@@ -1,7 +1,7 @@
 {
   "name": "Estudio IA de vídeo",
   "short_name": "Estudio IA",
-  "description": "Edición de vídeo con IA: rostros autorizados, diálogos y sincronización labial con aviso de contenido sintético.",
+  "description": "Genere vídeos con IA a partir de instrucciones, con personajes autorizados o caricaturas y aviso de contenido sintético.",
   "lang": "es",
   "start_url": "/#/",
   "scope": "/",

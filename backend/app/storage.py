@@ -21,7 +21,7 @@ from .security import sha256_file
 # marca de agua: sólo se accede a ellos a través de vistas previas o exportaciones.
 SERVABLE_KINDS = {
     "source_proxy", "thumb", "face_photo", "audio", "dialogue_audio", "music",
-    "preview", "review", "render", "subtitles", "manifest",
+    "preview", "preview_image", "review", "render", "subtitles", "manifest",
 }
 
 

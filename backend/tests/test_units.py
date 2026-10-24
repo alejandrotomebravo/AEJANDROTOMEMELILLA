@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.ai import quality, tts
+from app.ai import tts
 from app.ai.face_detect import Detection, Track, associate, interpolate
 from app.errors import ConsentError, PolicyError
 from app.media import subtitles, timeline, watermark
@@ -34,29 +34,12 @@ def test_watermark_rejects_unknown_labels_and_long_custom(env):
 
 # ------------------------------------------------------------ política de uso
 
-def _prov(**kw):
-    base = {"source_type": "propio", "attested": True, "can_modify": True}
-    base.update(kw)
-    return base
 
 
-def test_internet_download_requires_license(env):
-    with pytest.raises(PolicyError, match="Internet"):
-        policy.validate_provenance(_prov(internet_download=True))
 
 
-def test_creative_commons_nd_is_rejected(env):
-    with pytest.raises(PolicyError, match="ND"):
-        policy.validate_provenance(_prov(source_type="dominio_publico_cc",
-                                         license_url="https://creativecommons.org/licenses/by-nd/4.0/"))
-    ok = policy.validate_provenance(_prov(source_type="dominio_publico_cc",
-                                          license_url="https://creativecommons.org/licenses/by-nc/4.0/"))
-    assert any("No comercial" in w for w in ok["warnings"])
 
 
-def test_third_party_people_need_consent(env):
-    with pytest.raises(PolicyError):
-        policy.validate_provenance(_prov(third_party_people=True))
 
 
 def test_use_declaration_requires_all_commitments(env):
@@ -192,50 +175,18 @@ def test_interpolate():
     assert interpolate(tr, 0.5)["x"] == 5
 
 
-def _track(h, n=9, step=0.5):
-    return [{"t": i * step, "x": 100, "y": 100, "w": h, "h": h, "yaw": 0.0, "brightness": 120.0,
-             "profile": False} for i in range(n)]
 
 
-def test_quality_blocks_small_faces():
-    rep = quality.assess_segment(_track(40), [], 0, 4, 0.5)
-    assert not rep["ok"] and any("pequeño" in b for b in rep["blocking"])
 
 
-def test_quality_ok_for_good_material():
-    rep = quality.assess_segment(_track(200), [], 0, 4, 0.5)
-    assert rep["ok"] and not rep["warnings"]
 
 
-def test_quality_blocks_when_face_missing():
-    rep = quality.assess_segment(_track(200, n=3), [], 0, 4, 0.5)
-    assert not rep["ok"]
 
 
-def test_modify_permission_is_distinct_from_access(env):
-    with pytest.raises(PolicyError, match="MODIFICAR"):
-        policy.validate_provenance({"source_type": "propio", "attested": True})
 
 
-def test_internet_origin_with_nd_license_requires_explicit_authorization(env):
-    origin = {"connector": "wikimedia", "platform": "Wikimedia Commons",
-              "license": {"name": "CC BY-ND 4.0", "allows_modification": False, "notes": []}}
-    with pytest.raises(PolicyError):
-        policy.validate_provenance(_prov(source_type="licencia"), origin)
-    ok = policy.validate_provenance(_prov(source_type="autorizado", rights_holder="Autora"), origin)
-    assert ok["internet_download"] is True
 
 
-def test_average_identity_with_real_insightface_face():
-    common = pytest.importorskip("insightface.app.common")
-    import numpy as np
-    from app.ai.face_swap import average_identity
-    rng = np.random.default_rng(0)
-    faces = [common.Face(bbox=np.array([0, 0, s, s], dtype=float), embedding=rng.normal(size=512) * 20) for s in (50, 80)]
-    expected = np.mean([f.normed_embedding for f in faces], axis=0)
-    out = average_identity(faces)
-    assert np.allclose(out.normed_embedding, expected / np.linalg.norm(expected))
-    assert out is faces[1]  # la foto con el rostro más grande
 
 
 def test_long_credits_are_wrapped(env, tmp_path):

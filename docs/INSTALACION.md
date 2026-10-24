@@ -8,9 +8,10 @@
 | FFmpeg / FFprobe | ≥ 5 con `libx264`, `libass`, `libfreetype` | `libx265` opcional (H.265) |
 | OpenCV | **4.x** (`opencv-python-headless<5`) | OpenCV 5 eliminó los clasificadores Haar |
 
-> La versión 0.2 cambia el esquema de la base de datos (varias fuentes por proyecto). Las bases de datos de la 0.1 no se migran: haga copia y elimine `DATA_DIR`.
 | Fuente TTF | DejaVu Sans Bold u otra (`FONT_PATH`) | Para la marca de agua |
-| GPU NVIDIA | Opcional | Face swap y modelos de lipsync locales |
+| Claves de API | Opcionales | `ANTHROPIC_API_KEY` (guion), `FAL_KEY` (imágenes y vídeo) |
+
+> La versión 0.3 (generación de vídeo) cambia el esquema de la base de datos (v3). Las bases de datos anteriores no se migran: haga copia y use un `DATA_DIR` nuevo.
 
 ## Instalación local (desarrollo)
 
@@ -29,38 +30,39 @@ Abra `http://localhost:8000`. En el iPhone, use la IP local del ordenador o, mej
 Por defecto (`INLINE_WORKER=true`) la API procesa los trabajos en un hilo propio. Para separarlos:
 `INLINE_WORKER=false` y, en otra terminal, `python -m app.worker`.
 
-## Activar los módulos de IA
+## Activar la generación con IA
 
-La aplicación arranca sin IA de pago ni modelos pesados: importación, análisis facial, voces eSpeak,
-editor, vista previa y exportación con marca de agua funcionan. Cada módulo se activa en `.env`:
+Sin claves, la aplicación funciona en **modo local gratuito** (guion básico, filtros, animática) para probar todo el
+flujo. Para generar con IA, en `.env`:
 
-1. **Detección facial mejorada (YuNet, MIT)**: descargue `face_detection_yunet_2023mar.onnx` de OpenCV Zoo → `YUNET_MODEL_PATH`.
-2. **Sustitución facial (InsightFace)**: `pip install insightface onnxruntime` (o `onnxruntime-gpu`); coloque `buffalo_l` en `INSIGHTFACE_MODEL_ROOT/models/` y `inswapper_128.onnx` en `INSWAPPER_MODEL_PATH`; tras comprobar la licencia, `FACESWAP_PROVIDER=insightface` e `INSIGHTFACE_LICENSE_ACK=true`.
-3. **Sincronización labial**:
-   - Remota: `LIPSYNC_PROVIDER=sync_so`, `SYNC_API_KEY=…` y `PUBLIC_BASE_URL` con HTTPS público.
-   - Local: instale el modelo (Wav2Lip, LatentSync…) y configure `LIPSYNC_PROVIDER=command` + `LIPSYNC_COMMAND` (ver ejemplos en `.env.example`).
-4. **Voces**: `apt install espeak-ng`; Piper (`pip install piper-tts` + voces en `PIPER_VOICES_DIR`); ElevenLabs (`ELEVENLABS_API_KEY`, `ELEVENLABS_VOICE_IDS`).
+1. **Guion con Claude**: `ANTHROPIC_API_KEY=…` (consola de Anthropic). Opcional: `ANTHROPIC_MODEL`.
+2. **Imágenes y vídeo con fal.ai**: `FAL_KEY=…` (panel de fal.ai). Modelos y precios configurables (`FAL_*`).
+   Revise y ajuste `FAL_IMAGE_COST` y `FAL_VIDEO_COST_PER_SECOND` a la tarifa vigente: son los importes que la app
+   muestra antes de cada generación.
+3. **Voces**: `apt install espeak-ng`; Piper (`pip install piper-tts` + voces en `PIPER_VOICES_DIR`); ElevenLabs
+   (`ELEVENLABS_API_KEY`, `ELEVENLABS_VOICE_IDS`).
+4. **Detección facial mejorada para validar fotos (YuNet, MIT)**: `YUNET_MODEL_PATH`.
 5. **Subtítulos automáticos**: `pip install faster-whisper`, `ASR_PROVIDER=faster_whisper`.
-6. **Fuentes de Internet**: Wikimedia Commons, Internet Archive y enlaces directos funcionan sin claves. Pexels (`PEXELS_API_KEY`), Vimeo (`VIMEO_ACCESS_TOKEN`) y la búsqueda de YouTube (`YOUTUBE_API_KEY`) necesitan claves. Ver [CONECTORES.md](CONECTORES.md).
-7. **C2PA**: instale `c2patool` (releases de `contentauth/c2pa-rs`) y, en producción, `C2PA_SIGN_CERT`/`C2PA_PRIVATE_KEY`.
+6. **C2PA**: `c2patool` y, en producción, `C2PA_SIGN_CERT`/`C2PA_PRIVATE_KEY`.
 
-El estado real de cada módulo se ve en **Ajustes → Módulos del servidor**.
+Con `*_PROVIDER=auto` (por defecto) se usa el servicio si su clave existe. El estado real se ve en
+**Ajustes → Módulos del servidor**.
 
 ## Pruebas automatizadas
 
 ```bash
-cd backend && python -m pytest -q        # 91 pruebas: unidades, cola, extractor (SSRF, conectores) y flujo completo con FFmpeg real
+cd backend && python -m pytest -q        # 89 pruebas: unidades, cola, red segura, generador y flujo completo con FFmpeg real
 node --test ../frontend/tests.mjs        # lógica del editor y carga de todos los módulos
 ```
 
-Las pruebas de extremo a extremo usan FFmpeg real. Los modelos que requieren GPU, pesos con licencia o
-claves de pago se sustituyen por **dobles de prueba explícitos** (documentados en `tests/test_flow.py`):
-el proveedor de lipsync `command` real ejecuta una orden FFmpeg en lugar de un modelo, y la síntesis usa un
-binario falso de eSpeak que recorre la misma ruta de código.
+Las pruebas no llaman a servicios de pago: Claude y fal.ai se sustituyen por **dobles de prueba explícitos**
+(`tests/test_gen.py`) que comprueban la forma exacta de las peticiones, la cola de fal.ai, la reanudación sin
+volver a pagar, los rechazos y los filtros. El flujo de extremo a extremo (`tests/test_flow.py`) usa los
+proveedores locales reales y un binario falso de eSpeak que recorre la misma ruta de síntesis.
 
 ## Mantenimiento
 
-- **Limpieza automática** (cada hora, en el trabajador): temporales > `TEMP_RETENTION_HOURS`, proyectos inactivos > `RETENTION_DAYS`, sesiones caducadas, enlaces de consentimiento caducados, fragmentos enviados a proveedores (6 h).
+- **Limpieza automática** (cada hora, en el trabajador): temporales > `TEMP_RETENTION_HOURS`, proyectos inactivos > `RETENTION_DAYS`, sesiones caducadas, enlaces de consentimiento caducados, archivos temporales de los trabajos.
 - **Copias de seguridad**: `sqlite3 data/app.db ".backup copia.db"` + el directorio `data/storage`. Las copias contienen datos personales: cífrelas y aplíqueles la misma política de conservación.
 - **Actualizar**: `git pull`, `pip install -r backend/requirements.txt`, reiniciar API y trabajador. El esquema se crea con `CREATE TABLE IF NOT EXISTS`; los cambios incompatibles futuros incluirán migración.
 - **Trabajos atascados**: se reencolan solos si no envían latido en `JOB_STALE_SECONDS`. Desde la interfaz se puede cancelar y reintentar.

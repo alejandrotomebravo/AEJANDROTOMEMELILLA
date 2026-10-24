@@ -5,10 +5,10 @@ from typing import Any
 from fastapi import APIRouter, Depends
 
 from .. import db, policy, services
-from ..ai import asr, face_swap, lipsync, tts
+from ..ai import asr, tts
 from ..config import settings
 from ..media import ffmpeg, provenance, render, watermark
-from ..sources import registry
+from ..gen import images, llm, styles, video
 from .deps import current_user
 
 router = APIRouter(prefix="/api/system", tags=["sistema"])
@@ -27,8 +27,10 @@ def capabilities(user=Depends(current_user)) -> dict[str, Any]:
     return {
         "version": services.APP_VERSION,
         "face_detection": {"available": True, "detector": fd},
-        "face_swap": face_swap.status() | {"seconds_per_second": face_swap.seconds_per_second()},
-        "lipsync": lipsync.status(),
+        "llm": llm.status(),
+        "image": images.status(),
+        "video": video.status(),
+        "styles": styles.catalog(),
         "tts": {"voices": len(tts.list_voices()),
                 "providers": sorted({v.provider for v in tts.list_voices()})},
         "asr": asr.status(),
@@ -37,7 +39,6 @@ def capabilities(user=Depends(current_user)) -> dict[str, Any]:
         "export": {"h264": ffmpeg.has_encoder("libx264"), "h265": ffmpeg.has_encoder("libx265"),
                    "resolutions": [r for r in render.RESOLUTIONS if r != "360p" and (r != "2160p" or settings.allow_4k)],
                    "fps": sorted(render.FPS_OPTIONS)},
-        "connectors": [c.info() for c in registry.enabled()],
         "limits": {"max_upload_mb": settings.max_upload_mb, "max_video_seconds": settings.max_video_seconds,
                    "max_dialogue_seconds": settings.max_dialogue_seconds, "allow_4k": settings.allow_4k,
                    "allow_minors": settings.allow_minors},
@@ -45,7 +46,7 @@ def capabilities(user=Depends(current_user)) -> dict[str, Any]:
         "watermark": {"base_text": watermark.BASE_TEXT, "labels": watermark.ALLOWED_LABELS,
                       "positions": watermark.POSITIONS, "size": [watermark.MIN_SIZE, watermark.MAX_SIZE],
                       "opacity": [watermark.MIN_OPACITY, watermark.MAX_OPACITY], "disclaimer": watermark.DISCLAIMER},
-        "policy": {"source_types": policy.SOURCE_TYPES, "purposes": policy.PURPOSES,
+        "policy": {"purposes": policy.PURPOSES,
                    "confirmations": policy.REQUIRED_CONFIRMATIONS},
     }
 

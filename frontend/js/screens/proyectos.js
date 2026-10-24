@@ -14,8 +14,8 @@ export async function render(root) {
     const total = projects.reduce((a, p) => a + (p.storage_bytes || 0), 0);
     clear(box).append(h('p', { class: 'muted' }, `${projects.length} proyectos · ${fmtBytes(total)} ocupados`),
       h('div', { class: 'list' }, list.map(p => h('div', { class: 'list-item' },
-        h('div', { class: 'grow' }, h('a', { href: `#/proyecto/${p.id}/${p.has_video ? 'editor' : 'internet'}` }, h('strong', {}, p.name)),
-          h('div', {}, h('small', { class: 'muted' }, `${p.aspect} · ${p.sources} vídeo(s) · ${p.exports} exportación(es) · ${fmtBytes(p.storage_bytes)} · modificado ${fmtDate(p.updated_at)}`)),
+        h('div', { class: 'grow' }, h('a', { href: `#/proyecto/${p.id}/${p.has_video ? 'escenas' : 'personajes'}` }, h('strong', {}, p.name)),
+          h('div', {}, h('small', { class: 'muted' }, `${p.aspect} · ${p.cast} personaje(s) · ${p.clips} clip(s) · ${p.exports} exportación(es) · ${fmtBytes(p.storage_bytes)} · modificado ${fmtDate(p.updated_at)}`)),
           p.expires_at ? h('div', {}, h('small', { class: 'muted' }, `Se eliminará automáticamente el ${fmtDate(p.expires_at)} si no hay actividad.`)) : null),
         h('button', { class: 'btn small', onclick: async () => {
           const name = prompt('Nuevo nombre', p.name);
@@ -25,10 +25,10 @@ export async function render(root) {
         } }, 'Renombrar'),
         h('button', { class: 'btn small', onclick: async () => {
           await api(`/api/projects/${p.id}/duplicate`, { method: 'POST' });
-          projects = await api('/api/projects'); toast('Proyecto duplicado (sin vídeos)', 'ok'); draw();
+          projects = await api('/api/projects'); toast('Proyecto duplicado (instrucciones y ajustes, sin personajes ni clips)', 'ok'); draw();
         } }, 'Duplicar'),
         h('button', { class: 'btn small danger', onclick: async () => {
-          if (!await confirmDialog('Eliminar proyecto', `Se borrarán «${p.name}», sus vídeos, procesamientos y exportaciones.`, 'Eliminar', 'danger')) return;
+          if (!await confirmDialog('Eliminar proyecto', `Se borrarán «${p.name}», sus personajes, escenas, clips y exportaciones.`, 'Eliminar', 'danger')) return;
           await api(`/api/projects/${p.id}`, { method: 'DELETE' });
           projects = projects.filter(x => x.id !== p.id); toast('Proyecto eliminado', 'ok'); draw();
         } }, 'Eliminar')))));

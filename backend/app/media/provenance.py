@@ -26,18 +26,19 @@ def mp4_metadata(project_name: str, operations: list[str]) -> dict[str, str]:
     ops = ", ".join(operations) if operations else "edición"
     return {
         "title": project_name[:120],
-        "comment": f"Contenido sintético: vídeo alterado con inteligencia artificial ({ops}).",
-        "description": "VÍDEO EDITADO CON INTELIGENCIA ARTIFICIAL",
+        "comment": f"Contenido sintético: vídeo generado o alterado con inteligencia artificial ({ops}).",
+        "description": "VÍDEO GENERADO CON INTELIGENCIA ARTIFICIAL",
         "encoder": "Estudio IA de vídeo",
     }
 
 
-def build_manifest(project: dict[str, Any], operations: list[str], app_version: str) -> dict[str, Any]:
+def build_manifest(project: dict[str, Any], operations: list[str], app_version: str,
+                   generated: bool = False) -> dict[str, Any]:
     actions = [{
-        "action": "c2pa.edited",
-        "digitalSourceType": IPTC_COMPOSITE,
+        "action": "c2pa.created" if generated else "c2pa.edited",
+        "digitalSourceType": IPTC_TRAINED if generated else IPTC_COMPOSITE,
         "softwareAgent": {"name": "Estudio IA de vídeo", "version": app_version},
-        "description": "Vídeo alterado mediante IA: " + (", ".join(operations) or "edición"),
+        "description": "Vídeo creado mediante IA: " + (", ".join(operations) or "generación"),
     }]
     manifest: dict[str, Any] = {
         "claim_generator_info": [{"name": "Estudio IA de vídeo", "version": app_version}],
@@ -56,9 +57,9 @@ def build_manifest(project: dict[str, Any], operations: list[str], app_version: 
 def write_sidecar(path: Path, project: dict[str, Any], operations: list[str], app_version: str,
                   extra: dict[str, Any]) -> Path:
     data = {
-        "aviso": "VÍDEO EDITADO CON INTELIGENCIA ARTIFICIAL",
+        "aviso": "VÍDEO GENERADO CON INTELIGENCIA ARTIFICIAL",
         "operaciones": operations,
-        "digitalSourceType": IPTC_COMPOSITE,
+        "digitalSourceType": IPTC_TRAINED,
         "proyecto": project["name"],
         "generador": {"nombre": "Estudio IA de vídeo", "version": app_version},
         "firmado": False,

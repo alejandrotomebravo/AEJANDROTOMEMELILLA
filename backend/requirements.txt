@@ -5,3 +5,7 @@ python-multipart>=0.0.9
 numpy>=1.26
 # OpenCV 5 eliminó los clasificadores Haar usados como detector por defecto.
 opencv-python-headless>=4.10,<5
+# Composición de retratos y fotogramas en modo local
+pillow>=10
+# SDK oficial de Anthropic: Claude escribe el guion y los prompts (sólo se usa con ANTHROPIC_API_KEY)
+anthropic>=0.70

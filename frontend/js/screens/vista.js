@@ -1,11 +1,11 @@
-// Paso 7: vista previa exacta renderizada en el servidor y comparación con el original.
+// Paso 5: vista previa exacta renderizada en el servidor (subtítulos, gráficos y marca de agua).
 import { api, assetUrl } from '../api.js';
 import { h, field, toast, notice, fmtTime, clear } from '../ui.js';
 import { trackJob } from '../components.js';
-import { outputDuration, outputToSource } from '../history.js';
+import { outputDuration } from '../history.js';
 
 export async function render(root, project) {
-  if (!project.has_video) { root.append(notice('warn', 'Importe primero un vídeo.')); return; }
+  if (!project.has_video) { root.append(notice('warn', 'Genere primero el clip de alguna escena.')); return; }
   const tl = project.timeline;
   const total = outputDuration(tl);
   const start = h('input', { type: 'number', min: 0, max: total, step: 0.5, value: 0 });
@@ -20,7 +20,7 @@ export async function render(root, project) {
     try {
       const r = await api(`/api/projects/${project.id}/preview`, { method: 'POST', body: { start: a, end: b } });
       const j = await trackJob(jobBox, r.job, { title: 'Renderizando vista previa (360p)' });
-      if (j.status === 'succeeded') await showCompare(out, project, j.result.preview_asset_id, a);
+      if (j.status === 'succeeded') await showResult(out, j.result.preview_asset_id);
     } catch (e) { toast(e.message, 'error'); } finally { go.disabled = false; }
   } }, 'Generar vista previa');
   root.append(h('div', { class: 'card' }, h('h2', {}, 'Vista previa del montaje'),
@@ -30,31 +30,9 @@ export async function render(root, project) {
   h('div', { class: 'row end' }, h('a', { class: 'btn primary', href: `#/proyecto/${project.id}/exportar` }, 'Exportar →')));
 }
 
-async function showCompare(container, project, previewId, offset) {
+async function showResult(container, previewId) {
   const res = h('video', { class: 'player', controls: true, playsinline: true });
-  const orig = h('video', { class: 'player', playsinline: true, muted: true });
   res.src = await assetUrl(previewId);
-  const origUrls = {};
-  for (const s of project.sources.filter(x => x.status === 'ready')) origUrls[s.id] = await assetUrl(s.proxy_asset_id);
-  let loaded = null;
-  const sync = () => {
-    const m = outputToSource(project.timeline, offset + res.currentTime);
-    if (!m) return;
-    if (loaded !== m.source_id) {
-      loaded = m.source_id;
-      orig.src = origUrls[m.source_id];
-      orig.addEventListener('loadedmetadata', () => { orig.currentTime = m.source; if (!res.paused) orig.play().catch(() => {}); }, { once: true });
-      return;
-    }
-    orig.playbackRate = m.clip.speed || 1;
-    if (Math.abs(orig.currentTime - m.source) > 0.25) orig.currentTime = m.source;
-  };
-  res.addEventListener('play', () => { sync(); orig.play().catch(() => {}); });
-  res.addEventListener('pause', () => orig.pause());
-  res.addEventListener('seeked', sync);
-  res.addEventListener('timeupdate', sync);
-  sync();
-  clear(container).append(h('div', { class: 'card' }, h('h2', {}, 'Comparación con el original'),
-    h('div', { class: 'compare' }, h('figure', {}, h('figcaption', {}, 'Original (sin audio)'), orig), h('figure', {}, h('figcaption', {}, 'Resultado'), res)),
-    h('small', { class: 'muted' }, 'Controle la reproducción desde el vídeo de la derecha; el original le sigue.')));
+  clear(container).append(h('div', { class: 'card' }, h('h2', {}, 'Resultado'), res,
+    h('small', { class: 'muted' }, 'Vista previa en 360p. La exportación usa la resolución elegida en el paso siguiente.')));
 }

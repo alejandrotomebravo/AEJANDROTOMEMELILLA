@@ -185,7 +185,8 @@ class Response:
         self._conn.close()
 
 
-def request(url: str, *, method: str = "GET", headers: dict[str, str] | None = None) -> Response:
+def request(url: str, *, method: str = "GET", headers: dict[str, str] | None = None,
+            body: bytes | None = None) -> Response:
     """Petición con validación anti-SSRF en cada salto de redirección."""
     current = url
     for _ in range(settings.max_redirects + 1):
@@ -196,12 +197,12 @@ def request(url: str, *, method: str = "GET", headers: dict[str, str] | None = N
         hdrs.update(getattr(conn, "_proxy_headers", {}))
         try:
             path = t.path if not (settings.outbound_proxy and t.scheme == "http") else t.url
-            conn.request(method, path, headers=hdrs)
+            conn.request(method, path, body=body, headers=hdrs)
             resp = conn.getresponse()
         except (OSError, http.client.HTTPException) as e:
             conn.close()
             raise RetryableError(f"No se pudo conectar con el servidor de origen ({type(e).__name__}).")
-        if resp.status in (301, 302, 303, 307, 308):
+        if resp.status in (301, 302, 303, 307, 308) and method == "GET":
             loc = resp.getheader("Location")
             conn.close()
             if not loc:
@@ -212,13 +213,20 @@ def request(url: str, *, method: str = "GET", headers: dict[str, str] | None = N
     raise UnsafeURL("Demasiadas redirecciones.")
 
 
-def get_json(url: str, headers: dict[str, str] | None = None, max_bytes: int = 5 * 1024 * 1024) -> Any:
-    r = request(url, headers={"Accept": "application/json", **(headers or {})})
+def get_json(url: str, headers: dict[str, str] | None = None, max_bytes: int = 5 * 1024 * 1024,
+             method: str = "GET", json_body: Any = None) -> Any:
+    hdrs = {"Accept": "application/json", **(headers or {})}
+    body = None
+    if json_body is not None:
+        body = json.dumps(json_body).encode()
+        hdrs["Content-Type"] = "application/json"
+    r = request(url, headers=hdrs, method=method, body=body)
     try:
         if r.status in (429, 500, 502, 503, 504):
             raise RetryableError(f"El servicio de origen no está disponible ahora ({r.status}).")
         if r.status >= 400:
-            raise AppError(f"El servicio de origen respondió con un error ({r.status}).", code="fuente_error",
+            detail = r.read(600).decode("utf-8", "replace")
+            raise AppError(f"El servicio respondió con un error ({r.status}): {detail[:300]}", code="servicio_error",
                            status=502)
         data = r.read(max_bytes + 1)
         if len(data) > max_bytes:

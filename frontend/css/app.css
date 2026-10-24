@@ -214,3 +214,18 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 .sprite-thumb { width: 100%; display: block; }
 details summary { cursor: pointer; }
 .list-item.check { flex-wrap: nowrap; margin: 0; }
+
+/* ---- estudio de generación (v0.3) ---- */
+.styles { display: flex; flex-wrap: wrap; gap: 8px; }
+.style-chip { border: 2px solid var(--line); border-radius: 999px; padding: 8px 14px; background: var(--panel-2); color: inherit; cursor: pointer; font: inherit; min-height: 44px; }
+.style-chip.sel { border-color: var(--accent); font-weight: 700; }
+.cast-grid { grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); }
+.portrait, .keyframe, .clip { aspect-ratio: 1 / 1; border-radius: 12px; overflow: hidden; background: var(--panel-2); display: flex; align-items: center; justify-content: center; }
+.keyframe, .clip { aspect-ratio: auto; min-height: 160px; }
+.portrait img, .keyframe img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.keyframe img { height: auto; max-height: 62vh; object-fit: contain; }
+.portrait .ph { font-size: 3rem; }
+.keyframe .ph, .clip .ph { color: var(--muted); font-size: .9rem; }
+.scene-card { margin-bottom: var(--gap); }
+.scene-card textarea { min-height: 0; }
+@media (max-width: 560px) { .scene-card .compare { grid-template-columns: 1fr; } }

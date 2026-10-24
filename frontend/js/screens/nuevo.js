@@ -1,6 +1,7 @@
-// Paso 1: crear proyecto + declaración de uso responsable.
+// Crear proyecto: formato, estilo visual y declaración de uso responsable.
 import { api, capabilities } from '../api.js';
 import { h, field, select, checkbox, toast, notice } from '../ui.js';
+import { providerNote } from '../components.js';
 
 const ASPECTS = [
   ['9:16', 'Vertical', 'Redes sociales, móvil', 27, 48],
@@ -21,6 +22,15 @@ export async function render(root) {
     h('div', {}, h('small', { class: 'muted' }, d)))));
   };
   drawAspects();
+  let style = 'caricatura';
+  const styleBox = h('div', { class: 'styles' });
+  const drawStyles = () => {
+    styleBox.replaceChildren(...caps.styles.map(s => h('button', {
+      type: 'button', class: `style-chip ${s.key === style ? 'sel' : ''}`, 'aria-pressed': s.key === style,
+      onclick: () => { style = s.key; drawStyles(); },
+    }, s.label)));
+  };
+  drawStyles();
   const res = select(caps.export.resolutions.map(r => [r, r === '2160p' ? '4K (2160p)' : r]), '1080p');
   const fps = select(caps.export.fps.map(f => [f, `${f} fps`]), 30);
   const codec = select([['h264', 'MP4 · H.264 (máxima compatibilidad)'], ...(caps.export.h265 ? [['h265', 'MP4 · H.265/HEVC (menor tamaño)']] : [])], 'h264');
@@ -40,20 +50,22 @@ export async function render(root) {
     if (!purpose.value) return toast('Seleccione la finalidad del vídeo.', 'warn');
     submit.disabled = true;
     try {
-      const p = await api('/api/projects', { method: 'POST', body: { name: name.value, aspect, resolution: res.value, fps: Number(fps.value), codec: codec.value } });
+      const p = await api('/api/projects', { method: 'POST', body: { name: name.value, aspect, style, resolution: res.value, fps: Number(fps.value), codec: codec.value } });
       await api(`/api/projects/${p.id}/use-declaration`, { method: 'PUT', body: { purpose: purpose.value, detail: detail.value, distribution: distribution.value, confirmations: confirms } });
-      location.hash = `#/proyecto/${p.id}/internet`;
+      location.hash = `#/proyecto/${p.id}/personajes`;
     } catch (err) {
       toast(err.message, 'error');
     } finally { submit.disabled = false; }
   } },
   h('div', { class: 'cols even' },
     h('div', { class: 'card' }, h('h2', {}, 'Proyecto'), field('Nombre', name), h('div', { class: 'field' }, h('span', { class: 'label' }, 'Formato'), aspectBox),
+      h('div', { class: 'field' }, h('span', { class: 'label' }, 'Estilo visual'), styleBox, h('small', { class: 'help' }, 'Realista, caricatura, cómic, anime… Puede cambiarlo después y elegir otro por personaje.')),
       h('div', { class: 'cols even' }, field('Resolución de salida', res), field('Fotogramas por segundo', fps)), field('Formato de archivo', codec,
         'Puede cambiarlo al exportar.')),
     h('div', { class: 'card' }, h('h2', {}, 'Uso responsable'),
       field('Finalidad', purpose), field('Descripción breve (opcional)', detail), field('Difusión prevista', distribution),
       h('div', { class: 'field' }, h('span', { class: 'label' }, 'Compromisos (obligatorios)'), ...confirmEls),
-      notice('info', 'Todos los vídeos llevarán la marca visible «VÍDEO EDITADO CON INTELIGENCIA ARTIFICIAL». Esta declaración queda registrada.'))),
+      notice('info', `Todos los vídeos llevarán la marca visible «${caps.watermark.base_text}». Esta declaración queda registrada.`))),
+  providerNote(caps) || '',
   h('div', { class: 'row end' }, h('a', { class: 'btn ghost', href: '#/' }, 'Cancelar'), submit)));
 }

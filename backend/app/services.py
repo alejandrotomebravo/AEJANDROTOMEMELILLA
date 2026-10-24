@@ -5,13 +5,10 @@ from pathlib import Path
 from typing import Any
 
 from . import db, storage
-from .config import settings
 from .errors import AppError, ConsentError, NotFound
-from .media import ffmpeg, timeline, watermark
+from .media import timeline, watermark
 
-APP_VERSION = "0.2.0"
-
-_SOURCE_JSON = (("origin", {}), ("provenance", None), ("fragment", None), ("video_history", []), ("analysis", None))
+APP_VERSION = "0.3.0"
 
 
 # ------------------------------------------------------------------ proyectos
@@ -20,7 +17,7 @@ def load_project(project_id: str, user_id: str) -> dict[str, Any]:
     p = db.one("SELECT * FROM projects WHERE id=? AND user_id=?", (project_id, user_id))
     if not p:
         raise NotFound("Proyecto no encontrado.")
-    for k, default in (("settings", {}), ("use_declaration", None), ("timeline", {})):
+    for k, default in (("settings", {}), ("use_declaration", None), ("timeline", {}), ("storyboard", {})):
         p[k] = db.jload(p[k], default)
     return p
 
@@ -45,113 +42,103 @@ def require_declaration(project: dict[str, Any]) -> None:
         raise AppError("Complete primero la declaración de uso responsable.", code="declaracion_pendiente")
 
 
-# ------------------------------------------------------------------ fuentes de vídeo
+def project_style(project: dict[str, Any]) -> str:
+    from .gen import styles
+    return project["settings"].get("style") or styles.DEFAULT_STYLE
 
-def _parse_source(s: dict[str, Any]) -> dict[str, Any]:
-    for k, default in _SOURCE_JSON:
-        s[k] = db.jload(s[k], default)
-    return s
 
+# ------------------------------------------------------------------ reparto
+
+def load_cast(cast_id: str, project_id: str) -> dict[str, Any]:
+    c = db.one("SELECT * FROM cast_members WHERE id=? AND project_id=?", (cast_id, project_id))
+    if not c:
+        raise NotFound("Personaje no encontrado.")
+    c["meta"] = db.jload(c["meta"], {})
+    return c
+
+
+def list_cast(project_id: str, with_paths: bool = False) -> list[dict[str, Any]]:
+    rows = db.all_("SELECT * FROM cast_members WHERE project_id=? ORDER BY created_at", (project_id,))
+    for c in rows:
+        c["meta"] = db.jload(c["meta"], {})
+        if with_paths and c.get("portrait_asset_id"):
+            a = db.one("SELECT path FROM assets WHERE id=?", (c["portrait_asset_id"],))
+            c["portrait_path"] = a["path"] if a else None
+    return rows
+
+
+def require_cast_usable(project: dict[str, Any], user_id: str, names: list[str] | None = None) -> None:
+    """Comprueba el consentimiento vigente de todas las personas reales del reparto (o de las indicadas)."""
+    from .policy import require_identity_usable
+    for c in list_cast(project["id"]):
+        if names is not None and c["name"] not in names:
+            continue
+        if c["identity_id"]:
+            ident = load_identity(c["identity_id"], user_id, missing_ok=True)
+            if ident is None:
+                raise ConsentError(f"La persona de «{c['name']}» se ha eliminado. Quite el personaje o elija otra.")
+            require_identity_usable(ident, "imagen")
+
+
+def real_people_in_project(project_id: str) -> bool:
+    return bool(db.one("SELECT 1 FROM cast_members WHERE project_id=? AND identity_id IS NOT NULL LIMIT 1",
+                       (project_id,)))
+
+
+def watermark_cfg(project: dict[str, Any]) -> dict[str, Any]:
+    return watermark.with_required(project["settings"].get("watermark"),
+                                   faces_altered=real_people_in_project(project["id"]))
+
+
+# ------------------------------------------------------------------ guion y escenas
+
+def scenes(project: dict[str, Any]) -> list[dict[str, Any]]:
+    return list((project.get("storyboard") or {}).get("scenes") or [])
+
+
+def find_scene(project: dict[str, Any], scene_id: str) -> tuple[int, dict[str, Any]]:
+    for i, s in enumerate(scenes(project)):
+        if s["id"] == scene_id:
+            return i, s
+    raise NotFound("Escena no encontrada.")
+
+
+def save_scene(project_id: str, user_id: str, scene_id: str, **fields: Any) -> dict[str, Any]:
+    """Actualiza una escena releyendo el proyecto (evita pisar cambios concurrentes de otros trabajos)."""
+    with db.tx():
+        p = load_project(project_id, user_id)
+        board = p["storyboard"]
+        for s in board.get("scenes", []):
+            if s["id"] == scene_id:
+                s.update(fields)
+                db.execute("UPDATE projects SET storyboard=?, updated_at=? WHERE id=?",
+                           (db.jdump(board), db.now(), project_id))
+                return s
+    raise NotFound("Escena no encontrada.")
+
+
+# ------------------------------------------------------------------ clips generados (fuentes)
 
 def load_source(source_id: str, user_id: str, project_id: str | None = None) -> dict[str, Any]:
     s = db.one("SELECT * FROM sources WHERE id=? AND user_id=?", (source_id, user_id))
     if not s or (project_id and s["project_id"] != project_id):
-        raise NotFound("Fuente de vídeo no encontrada.")
-    return _parse_source(s)
-
-
-def list_sources(project_id: str) -> list[dict[str, Any]]:
-    return [_parse_source(s) for s in db.all_("SELECT * FROM sources WHERE project_id=? ORDER BY created_at", (project_id,))]
-
-
-def update_source(source_id: str, **fields: Any) -> None:
-    sets, vals = [], []
-    for k, v in fields.items():
-        sets.append(f"{k}=?")
-        vals.append(db.jdump(v) if isinstance(v, (dict, list)) else v)
-    vals.append(source_id)
-    db.execute(f"UPDATE sources SET {', '.join(sets)} WHERE id=?", tuple(vals))
-
-
-def require_source_ready(source: dict[str, Any]) -> None:
-    if not source.get("provenance"):
-        raise AppError(f"Declare la procedencia de «{source['label']}» antes de procesarla.", code="procedencia_pendiente")
-    if source["status"] != "ready" or not source.get("working_asset_id"):
-        raise AppError(f"«{source['label']}» todavía no está lista.", code="fuente_no_lista")
-
-
-def source_working_path(source: dict[str, Any]) -> Path:
-    return Path(storage.get(source["working_asset_id"])["path"])
-
-
-def set_source_working(source: dict[str, Any], new_asset_id: str, operation: str,
-                       identities: list[str] | None = None) -> None:
-    """Nueva versión procesada de una fuente, con historial para poder revertir."""
-    history = list(source.get("video_history") or [])
-    # Al procesar desde una versión anterior se descartan las versiones posteriores.
-    if source["working_asset_id"] != source["proxy_asset_id"]:
-        idx = next((i for i, h in enumerate(history) if h["asset_id"] == source["working_asset_id"]), len(history) - 1)
-        history = history[: idx + 1]
-    else:
-        history = []
-    history.append({"asset_id": new_asset_id, "operation": operation, "identities": identities or [], "at": db.now()})
-    update_source(source["id"], working_asset_id=new_asset_id, video_history=history)
-    source["working_asset_id"] = new_asset_id
-    source["video_history"] = history
-
-
-def _active_history(source: dict[str, Any]) -> list[dict[str, Any]]:
-    out = []
-    for h in source.get("video_history") or []:
-        if source["working_asset_id"] == source["proxy_asset_id"]:
-            break
-        out.append(h)
-        if h["asset_id"] == source["working_asset_id"]:
-            break
-    return out
-
-
-def used_identities(project_id: str) -> set[str]:
-    ids: set[str] = set()
-    for s in list_sources(project_id):
-        for h in _active_history(s):
-            ids.update(h.get("identities") or [])
-    return ids
-
-
-def operations(project_id: str) -> list[str]:
-    names = {"faceswap": "sustitución facial", "lipsync": "sincronización labial"}
-    ops = {names.get(h["operation"], h["operation"]) for s in list_sources(project_id) for h in _active_history(s)}
-    return sorted(ops)
-
-
-def faces_altered(project_id: str) -> bool:
-    return any(h["operation"] == "faceswap" for s in list_sources(project_id) for h in _active_history(s))
-
-
-def watermark_cfg(project: dict[str, Any]) -> dict[str, Any]:
-    return watermark.with_required(project["settings"].get("watermark"), faces_altered=faces_altered(project["id"]))
-
-
-def check_identities_still_valid(project_id: str, user_id: str) -> None:
-    from .policy import require_identity_usable
-    for iid in used_identities(project_id):
-        ident = load_identity(iid, user_id, missing_ok=True)
-        if ident is None:
-            raise ConsentError("El vídeo contiene una identidad eliminada. Revierta el procesamiento de esa fuente.")
-        require_identity_usable(ident, "imagen")
+        raise NotFound("Clip no encontrado.")
+    s["origin"] = db.jload(s["origin"], {})
+    return s
 
 
 def source_durations(project_id: str) -> dict[str, float]:
-    return {s["id"]: float(s["duration"] or 0) for s in list_sources(project_id) if s["status"] == "ready"}
+    return {s["id"]: float(s["duration"] or 0) for s in
+            db.all_("SELECT id, duration FROM sources WHERE project_id=? AND status='ready'", (project_id,))}
 
 
 def timeline_sources(project: dict[str, Any], user_id: str) -> dict[str, Path]:
     out = {}
     for sid in timeline.used_sources(project["timeline"]):
         s = load_source(sid, user_id, project["id"])
-        require_source_ready(s)
-        out[sid] = source_working_path(s)
+        if s["status"] != "ready" or not s["working_asset_id"]:
+            raise AppError("Hay escenas cuyo clip no está listo.", code="clip_no_listo")
+        out[sid] = Path(storage.get(s["working_asset_id"])["path"])
     return out
 
 
@@ -159,26 +146,55 @@ def asset_paths_for_timeline(tl: dict[str, Any], user_id: str) -> dict[str, Path
     return {aid: Path(storage.get_owned(aid, user_id)["path"]) for aid in timeline.referenced_assets(tl)}
 
 
-def credits(project: dict[str, Any]) -> list[str]:
-    """Créditos de las fuentes usadas en el montaje que tienen autor o exigen atribución."""
-    used = set(timeline.used_sources(project["timeline"]))
-    lines = []
-    for s in list_sources(project["id"]):
-        if s["id"] not in used:
-            continue
-        o = s["origin"] or {}
-        lic = o.get("license") or {}
-        if o.get("attribution") and (lic.get("requires_attribution") or o.get("author")):
-            lines.append(o["attribution"][:200])
-        elif s.get("provenance") and s["provenance"].get("rights_holder") and s["provenance"].get("source_type") != "propio":
-            lines.append(f"«{s['label']}» · {s['provenance']['rights_holder']}")
-    return lines
+def place_scene_clip(project_id: str, user_id: str, scene_id: str, new_source_id: str, duration: float,
+                     old_source_id: str | None) -> None:
+    """Coloca (o sustituye) el clip de una escena en la línea de tiempo respetando el orden del guion
+    y las ediciones que el usuario ya hubiera hecho sobre el clip anterior."""
+    with db.tx():
+        p = load_project(project_id, user_id)
+        tl = p["timeline"] or timeline.empty()
+        clips = tl["video"]["clips"]
+        replaced = False
+        for c in clips:
+            if old_source_id and c["source_id"] == old_source_id:
+                c.update({"source_id": new_source_id, "in": 0.0, "out": round(duration, 3)})
+                replaced = True
+        if old_source_id:
+            for coll in (tl["dialogue"]["items"], tl["source_audio"]["mutes"], tl["subtitles"]["items"]):
+                for it in coll:
+                    if it.get("source_id") == old_source_id:
+                        it["source_id"] = new_source_id
+        if not replaced:
+            order = [s["id"] for s in p["storyboard"].get("scenes", [])]
+            src_scene = {s["clip"]["source_id"]: s["id"] for s in p["storyboard"].get("scenes", []) if s.get("clip")}
+            pos = len(clips)
+            my = order.index(scene_id) if scene_id in order else len(order)
+            for i, c in enumerate(clips):
+                sc = src_scene.get(c["source_id"])
+                if sc in order and order.index(sc) > my:
+                    pos = i
+                    break
+            clips.insert(pos, timeline.new_clip(new_source_id, 0.0, duration))
+        db.execute("UPDATE projects SET timeline=?, timeline_version=timeline_version+1, updated_at=? WHERE id=?",
+                   (db.jdump(tl), db.now(), project_id))
 
 
-def credits_required(project: dict[str, Any]) -> bool:
-    used = set(timeline.used_sources(project["timeline"]))
-    return any(((s["origin"] or {}).get("license") or {}).get("requires_attribution")
-               for s in list_sources(project["id"]) if s["id"] in used)
+def remove_scene_clip(project_id: str, user_id: str, source_id: str) -> None:
+    with db.tx():
+        p = load_project(project_id, user_id)
+        tl = timeline.remove_source(p["timeline"], source_id)
+        db.execute("UPDATE projects SET timeline=?, timeline_version=timeline_version+1, updated_at=? WHERE id=?",
+                   (db.jdump(tl), db.now(), project_id))
+
+
+def delete_source(source_id: str) -> None:
+    s = db.one("SELECT * FROM sources WHERE id=?", (source_id,))
+    if not s:
+        return
+    for k in ("original_asset_id", "proxy_asset_id", "working_asset_id", "review_asset_id", "sprite_asset_id"):
+        if s.get(k):
+            storage.delete_asset(s[k])
+    db.execute("DELETE FROM sources WHERE id=?", (source_id,))
 
 
 # ------------------------------------------------------------------ identidades
@@ -200,52 +216,30 @@ def identity_photos(identity_id: str) -> list[Path]:
 
 
 def purge_identity_from_projects(identity_id: str, user_id: str) -> int:
-    """Tras retirar el consentimiento: borra versiones procesadas, vistas previas y exportaciones que
-    contienen a esa persona y devuelve las fuentes afectadas a su vídeo original."""
-    affected_projects: set[str] = set()
-    for row in db.all_("SELECT id FROM sources WHERE user_id=?", (user_id,)):
-        s = load_source(row["id"], user_id)
-        hist = s.get("video_history") or []
-        if not any(identity_id in (h.get("identities") or []) for h in hist):
-            continue
-        affected_projects.add(s["project_id"])
-        for h in hist:
-            storage.delete_asset(h["asset_id"])
-        if s.get("review_asset_id"):
-            storage.delete_asset(s["review_asset_id"])
-        update_source(s["id"], working_asset_id=s["proxy_asset_id"], video_history=[], review_asset_id=None)
-        db.audit("fuente_revertida_por_revocacion", user_id, s["project_id"], source=s["id"], identity_id=identity_id)
-    for pid in affected_projects:
-        for a in db.all_("SELECT id FROM assets WHERE project_id=? AND kind IN ('preview','render')", (pid,)):
+    """Tras retirar el consentimiento: borra retratos, fotogramas, clips, vistas previas y exportaciones
+    en los que aparece un personaje basado en esa persona."""
+    affected = 0
+    for c in db.all_("""SELECT c.* FROM cast_members c JOIN projects p ON p.id=c.project_id
+                        WHERE c.identity_id=? AND p.user_id=?""", (identity_id, user_id)):
+        affected += 1
+        for k in ("portrait_asset_id", "portrait_preview_asset_id"):
+            if c[k]:
+                storage.delete_asset(c[k])
+        db.execute("UPDATE cast_members SET portrait_asset_id=NULL, portrait_preview_asset_id=NULL, status='revoked', "
+                   "identity_id=NULL WHERE id=?", (c["id"],))
+        p = load_project(c["project_id"], user_id)
+        for s in scenes(p):
+            if c["name"] in s.get("characters", []):
+                for part in ("keyframe", "clip"):
+                    info = s.get(part) or {}
+                    for k in ("asset_id", "preview_asset_id"):
+                        if info.get(k):
+                            storage.delete_asset(info[k])
+                    if part == "clip" and info.get("source_id"):
+                        remove_scene_clip(p["id"], user_id, info["source_id"])
+                        delete_source(info["source_id"])
+                save_scene(p["id"], user_id, s["id"], keyframe=None, clip=None)
+        for a in db.all_("SELECT id FROM assets WHERE project_id=? AND kind IN ('preview','render')", (p["id"],)):
             storage.delete_asset(a["id"])
-    db.execute("UPDATE characters SET identity_id=NULL WHERE identity_id=?", (identity_id,))
-    return len(affected_projects)
-
-
-# ------------------------------------------------------------------ utilidades multimedia
-
-def splice(base: Path, segment: Path, start: float, end: float, out: Path) -> ffmpeg.MediaInfo:
-    """Sustituye la imagen de ``base`` en [start, end] por ``segment`` conservando el audio de ``base``."""
-    info = ffmpeg.probe(base)
-    dur = round(end - start, 3)
-    w, h, fps = info.width, info.height, info.fps or 30
-    parts, fc = [], []
-    if start > 0.01:
-        fc.append(f"[0:v]trim=start=0:end={start},setpts=PTS-STARTPTS[pa]")
-        parts.append("[pa]")
-    fc.append(f"[1:v]scale={w}:{h},setsar=1,fps={fps},tpad=stop_mode=clone:stop_duration={dur},"
-              f"trim=duration={dur},setpts=PTS-STARTPTS[pb]")
-    parts.append("[pb]")
-    if info.duration - end > 0.01:
-        fc.append(f"[0:v]trim=start={end},setpts=PTS-STARTPTS[pc]")
-        parts.append("[pc]")
-    fc.append(f"{''.join(parts)}concat=n={len(parts)}:v=1:a=0,format=yuv420p[v]")
-    ffmpeg.run([settings.ffmpeg, "-y", "-i", str(base), "-i", str(segment), "-filter_complex", ";".join(fc),
-                "-map", "[v]", "-map", "0:a?", "-c:v", "libx264", "-preset", "veryfast", "-crf", "16",
-                "-c:a", "copy", "-movflags", "+faststart", str(out)])
-    return ffmpeg.probe(out)
-
-
-def mux_audio(video: Path, audio: Path, out: Path) -> None:
-    ffmpeg.run([settings.ffmpeg, "-y", "-i", str(video), "-i", str(audio), "-map", "0:v:0", "-map", "1:a:0",
-                "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-shortest", str(out)])
+        db.audit("personaje_eliminado_por_revocacion", user_id, p["id"], cast=c["id"], identity_id=identity_id)
+    return affected

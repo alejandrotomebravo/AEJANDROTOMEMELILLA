@@ -1,67 +1,63 @@
 # Estudio IA de vídeo
 
-Aplicación web instalable (PWA) para crear vídeos personalizados con IA de forma responsable:
-**importación de vídeos de fuentes autorizadas de Internet o del móvil/ordenador, selección de escenas,
-sustitución facial con rostros autorizados, diálogos (texto a voz, micrófono o archivo), sincronización
-labial, editor multipista y exportación con marca de agua obligatoria de contenido sintético.**
+Aplicación web instalable (PWA) para **generar vídeos con IA a partir de instrucciones escritas**, con
+personajes que llevan **la cara o la caricatura** de personas que lo han autorizado (usted mismo o terceros
+con consentimiento revocable) o personajes inventados, en el **estilo visual** que elija:
+realista, caricatura, cómic, anime, animación 3D, acuarela, boceto, pixel art o plastilina.
 
-Toda la interfaz está en español y funciona en iPhone (Safari / PWA), Android y ordenador.
+Interfaz en español; funciona en iPhone (Safari / PWA), Android y ordenador.
 
-## Estado por fases (v0.2)
+## Flujo
+
+| Paso | Qué hace | Proveedor con IA | Modo local gratuito (sin claves) |
+|---|---|---|---|
+| Nuevo proyecto | Formato (9:16, 16:9, 1:1), estilo y declaración de uso responsable | — | — |
+| 1 · Personajes | Reparto: persona real autorizada (con sus fotos) o personaje inventado; retrato en el estilo elegido; voz | fal.ai · `nano-banana/edit` (con la foto de referencia) | Filtro OpenCV del estilo sobre la foto / figura dibujada |
+| 2 · Guion | Instrucciones → guion gráfico con escenas, diálogos y prompts de imagen y vídeo; editable y reescribible por escena | Claude (API de Anthropic) con salida JSON estructurada | Una escena por frase; diálogos entre «…» |
+| 3 · Escenas | Fotograma clave con los personajes → clip de vídeo → voces y subtítulos | fal.ai · `nano-banana/edit` + Kling 2.1 imagen‑a‑vídeo (5/10 s) | Composición PIL + animática FFmpeg (zoom/paneo) |
+| 4 · Editor | Montaje multipista: orden, recortes, velocidad, color, fundidos, música, subtítulos, textos | — | — |
+| 5 · Vista previa | Render exacto en 360p con marca de agua | — | — |
+| 6 · Exportar | MP4 H.264/H.265 hasta 1080p (4K opcional), SRT, JSON de procedencia, C2PA si está instalado | — | — |
+
+Cada generación de pago muestra antes su **coste estimado** y exige confirmación (HTTP 402 `confirmar_coste`).
+El modo local **no es IA generativa** y la interfaz lo dice expresamente: sirve para probar el flujo.
+
+## Estado (v0.3)
 
 | Fase | Contenido | Estado |
 |---|---|---|
-| 1 | Viabilidad, tecnologías, fuentes de vídeo realmente importables | ✅ [ARQUITECTURA](docs/ARQUITECTURA.md), [CONECTORES](docs/CONECTORES.md), [COSTES](docs/COSTES.md) |
-| 2 | Archivos locales (por lotes) + fuentes de Internet compatibles con sus condiciones | ✅ Wikimedia Commons, Internet Archive, Pexels (con clave), Vimeo (sólo con permiso de descarga), enlace directo. YouTube: sólo búsqueda/metadatos |
-| 3 | Detección facial, sustitución autorizada (con intensidad), diálogos, sincronización labial | ✅ Integración real; modelos según configuración (ver abajo) |
-| 4 | Editor multipista, marca de agua, exportación | ✅ Varias fuentes, velocidad, fundidos, color, volumen, subtítulos, gráficos, créditos, deshacer, autoguardado, comparación |
-| 5 | Más conectores, rendimiento y seguridad | 🟡 Anti‑SSRF, firmas de archivo, FFmpeg aislado, conectores extensibles. Pendiente: OAuth de nubes, PostgreSQL/S3, cuotas |
-| 6 | Pruebas, instalación, despliegue | ✅ 91 pruebas backend + 4 frontend; prueba en navegador con tamaño iPhone |
-
-### Qué funciona sin configurar nada
-Importación de archivos (MP4, MOV, iPhone HEVC con rotación, por lotes, por fragmentos), importación desde **Wikimedia
-Commons**, **Internet Archive** y **enlaces directos**, fotogramas de previsualización, detección de escenas, rostros
-(OpenCV) y audio, identidades con consentimiento por enlace, voces eSpeak NG (si está instalado), micrófono, editor,
-vista previa y exportación H.264/H.265 con marca de agua, créditos, SRT y JSON de procedencia.
-
-> ⚠ Los conectores de Internet se han probado con respuestas que siguen la documentación oficial y con descargas
-> reales desde un servidor local: el entorno de desarrollo no tenía acceso a esas plataformas. Verifíquelos contra los
-> servicios reales antes de producción ([CONECTORES §4](docs/CONECTORES.md)).
-
-### Qué requiere configuración (no se simula)
-| Módulo | Requiere |
-|---|---|
-| Sustitución facial | `insightface` + modelos `buffalo_l` e `inswapper_128.onnx` (**uso no comercial salvo licencia**) |
-| Sincronización labial | Clave de **sync.so** (de pago, ≈2,4‑3 USD/min) **o** un modelo local con GPU (Wav2Lip/LatentSync) |
-| Voces naturales | Piper (+ voces) o clave de ElevenLabs |
-| Subtítulos automáticos (voz a texto) | `faster-whisper` |
-| Pexels / Vimeo / búsqueda en YouTube | `PEXELS_API_KEY` / `VIMEO_ACCESS_TOKEN` / `YOUTUBE_API_KEY` |
-| C2PA firmado | `c2patool` + certificado |
+| 1 | Viabilidad, proveedores y costes | ✅ [ARQUITECTURA](docs/ARQUITECTURA.md), [COSTES](docs/COSTES.md), [PROMPT](docs/PROMPT.md) |
+| 2 | Personajes con consentimiento, estilos, retratos | ✅ |
+| 3 | Guion con Claude, fotogramas y clips con fal.ai, voces | ✅ Integración implementada; **no probada contra los servicios reales** (sin claves ni red en el entorno de desarrollo; probada con dobles que siguen la documentación oficial) |
+| 4 | Editor, marca de agua, exportación | ✅ |
+| 5 | Seguridad y privacidad | ✅ Consentimiento revocable con borrado en cascada, menores bloqueados, filtros de instrucciones, red de salida anti‑SSRF |
+| 6 | Pruebas, instalación, despliegue | ✅ 89 pruebas backend + 4 frontend; flujo completo probado en navegador con tamaño iPhone 13 (modo local) |
 
 ## Inicio rápido
 
 ```bash
 pip install -r backend/requirements-dev.txt
-cp .env.example .env    # para desarrollo: APP_ENV=development, DATA_DIR=./data
-cd backend && uvicorn app.main:app --port 8000
-# http://localhost:8000
+cp .env.example .env    # desarrollo: APP_ENV=development, DATA_DIR=./data
+# opcional: ANTHROPIC_API_KEY=… y FAL_KEY=… para generar con IA
+cd backend && uvicorn app.main:app --port 8000     # http://localhost:8000
 ```
 
 Pruebas: `cd backend && python -m pytest -q` y `node --test frontend/tests.mjs`.
 
 ## Documentación
+- [Prompt de especificación (v0.3)](docs/PROMPT.md)
 - [Arquitectura y justificación](docs/ARQUITECTURA.md)
 - [Instalación, ejecución y mantenimiento](docs/INSTALACION.md)
 - [Despliegue](docs/DESPLIEGUE.md)
-- [Fuentes de Internet y cómo añadir conectores](docs/CONECTORES.md)
-- [Seguridad del extractor](docs/SEGURIDAD.md)
 - [Costes por minuto](docs/COSTES.md)
+- [Seguridad](docs/SEGURIDAD.md)
 - [Privacidad y cumplimiento](docs/PRIVACIDAD_Y_CUMPLIMIENTO.md)
 - [Limitaciones y mejoras](docs/LIMITACIONES.md)
 - API interactiva: `/api/docs`
 
 ## Aviso
-La marca de agua «VÍDEO EDITADO CON INTELIGENCIA ARTIFICIAL» no puede desactivarse y **no sustituye** a las
-autorizaciones de derechos de autor, imagen o voz que sean necesarias. La aplicación no permite contenido
-íntimo, suplantaciones fraudulentas, acoso ni falsificación de pruebas, y bloquea el uso de imagen y voz de menores
-por defecto.
+Todas las imágenes, clips, vistas previas y exportaciones llevan el aviso visible **«VÍDEO GENERADO CON
+INTELIGENCIA ARTIFICIAL»**, que no puede desactivarse; si hay personajes basados en personas reales se añade
+obligatoriamente «PERSONAJES BASADOS EN PERSONAS REALES». El aviso **no sustituye** a las autorizaciones de imagen
+y voz. No se permite usar la imagen de personas sin su consentimiento (incluidos famosos), de menores, ni crear
+contenido sexual, suplantaciones, fraudes, acoso o desinformación que parezca real.
